@@ -99,16 +99,16 @@ class LoginRequest(BaseModel):
     password: str
 
 class ChatRequest(BaseModel):
-    user_id: int
+    user_id: str
     message: str
 
 class UpgradeRequest(BaseModel):
-    user_id: int
+    user_id: str
     tier: str
     email: str
 
 class CouponRequest(BaseModel):
-    user_id: int
+    user_id: str
     code: str
 
 # =========================
@@ -423,7 +423,7 @@ def chat(data: ChatRequest):
 # =========================
 
 @app.get("/memory/{user_id}")
-def get_memory(user_id: int):
+def get_memory(user_id: str):
     try:
         short = get_short_memory(user_id, limit=50)
         long = get_long_memory(user_id)
@@ -438,7 +438,7 @@ def get_memory(user_id: int):
 
 
 @app.delete("/memory/{user_id}")
-def clear_memory(user_id: int):
+def clear_memory(user_id: str):
     try:
         supabase.table("evosgpt_memory") \
             .delete() \
@@ -455,7 +455,7 @@ def clear_memory(user_id: int):
 # =========================
 
 @app.get("/user/{user_id}")
-def get_user(user_id: int):
+def get_user(user_id: str):
     try:
         res = supabase.table("evosgpt_users") \
             .select("id, username, email, tier, referral_code, referred_by, referral_count, created_at") \
@@ -656,7 +656,7 @@ def redeem_coupon(data: CouponRequest):
 # =========================
 
 @app.get("/referral/{user_id}")
-def get_referral(user_id: int):
+def get_referral(user_id: str):
     try:
         res = supabase.table("evosgpt_users") \
             .select("referral_code, referral_count") \
