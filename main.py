@@ -1,9 +1,8 @@
-from fastapi import FastAPI, HTTPException, Request, Depends
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, EmailStr
 from typing import Optional
 from supabase import create_client, Client
-from passlib.context import CryptContext
 from datetime import datetime, timezone
 import os
 import uuid
@@ -37,65 +36,58 @@ app.add_middleware(
 # =========================
 # ENV
 # =========================
-SUPABASE_URL = os.getenv("SUPABASE_URL")
-SUPABASE_KEY = os.getenv("SUPABASE_KEY")
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-PAYSTACK_SECRET = os.getenv("PAYSTACK_SECRET_KEY")
+SUPABASE_URL      = os.getenv("SUPABASE_URL")
+SUPABASE_ANON_KEY = os.getenv("SUPABASE_ANON_KEY")
+SUPABASE_KEY      = os.getenv("SUPABASE_KEY")
+OPENAI_API_KEY    = os.getenv("OPENAI_API_KEY")
+PAYSTACK_SECRET   = os.getenv("PAYSTACK_SECRET_KEY")
 
 # =========================
-# SUPABASE
+# SUPABASE CLIENTS
+# auth_client -> anon key  -> Supabase Auth (sign_up / sign_in)
+# db_client   -> service role key -> DB reads/writes (bypasses RLS)
 # =========================
-supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
-
-# =========================
-# PASSWORD HASHING
-# =========================
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
-
-def hash_password(password: str) -> str:
-    return pwd_context.hash(password)
-
-def verify_password(plain: str, hashed: str) -> bool:
-    return pwd_context.verify(plain, hashed)
+auth_client: Client = create_client(SUPABASE_URL, SUPABASE_ANON_KEY)
+db_client: Client   = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 # =========================
 # TIER CONFIG
 # =========================
 TIER_MODELS = {
-    "Basic": "gpt-4o-mini",
-    "Core": "gpt-4o-mini",
-    "Pro": "gpt-4o",
-    "King": "gpt-4o",
+    "Basic":   "gpt-4o-mini",
+    "Core":    "gpt-4o-mini",
+    "Pro":     "gpt-4o",
+    "King":    "gpt-4o",
     "Founder": "gpt-4o",
 }
 
 TIER_MEMORY_LIMIT = {
-    "Basic": 20,
-    "Core": 50,
-    "Pro": 100,
-    "King": 200,
+    "Basic":   20,
+    "Core":    50,
+    "Pro":     100,
+    "King":    200,
     "Founder": 500,
 }
 
 TIER_PRICES_GHS = {
     "Core": 15,
-    "Pro": 75,
+    "Pro":  75,
     "King": 135,
 }
 
 VALID_UPGRADE_TIERS = set(TIER_PRICES_GHS.keys())
 
 # =========================
-# MODELS
+# REQUEST MODELS
 # =========================
 class RegisterRequest(BaseModel):
-    username: str
-    email: EmailStr
-    password: str
+    username:    str
+    email:       EmailStr
+    password:    str
     referred_by: Optional[str] = None
 
 class LoginRequest(BaseModel):
-    username: str
+    email:    EmailStr
     password: str
 
 class ChatRequest(BaseModel):
@@ -104,103 +96,142 @@ class ChatRequest(BaseModel):
 
 class UpgradeRequest(BaseModel):
     user_id: str
-    tier: str
-    email: str
+    tier:    str
+    email:   str
 
 class CouponRequest(BaseModel):
     user_id: str
-    code: str
+    code:    str
+
 
 # =========================
-# HELPERS
+# PROFILE HELPERS
 # =========================
-def get_user_tier(user_id: int) -> str:
-    res = supabase.table("evosgpt_users") \
-        .select("tier") \
+
+def get_profile(user_id: str) -> Optional[dict]:
+    res = db_client.table("profiles") \
+        .select("*") \
         .eq("id", user_id) \
         .limit(1) \
         .execute()
-    if res.data:
-        return res.data[0].get("tier", "Basic")
-    return "Basic"
+    return res.data[0] if res.data else None
 
 
-def get_short_memory(user_id: int, limit: int = 20) -> list:
-    res = supabase.table("evosgpt_memory") \
+def get_user_tier(user_id: str) -> str:
+    profile = get_profile(user_id)
+    return profile.get("tier", "Basic") if profile else "Basic"
+
+
+def create_profile(user_id: str, username: str, email: str, referred_by: Optional[str]) -> str:
+    referral_code = f"EVOS-{username[:4].upper()}-{uuid.uuid4().hex[:4].upper()}"
+
+    db_client.table("profiles").insert({
+        "id":             user_id,
+        "username":       username,
+        "email":          email,
+        "tier":           "Basic",
+        "referral_code":  referral_code,
+        "referred_by":    referred_by,
+        "referral_count": 0,
+        "created_at":     datetime.now(timezone.utc).isoformat()
+    }).execute()
+
+    if referred_by:
+        try:
+            ref_res = db_client.table("profiles") \
+                .select("id, referral_count") \
+                .eq("referral_code", referred_by) \
+                .limit(1) \
+                .execute()
+            if ref_res.data:
+                ref_user = ref_res.data[0]
+                db_client.table("profiles") \
+                    .update({"referral_count": (ref_user.get("referral_count") or 0) + 1}) \
+                    .eq("id", ref_user["id"]) \
+                    .execute()
+        except Exception as e:
+            print("REFERRAL CREDIT ERROR:", str(e))
+
+    return referral_code
+
+
+# =========================
+# MEMORY HELPERS
+# =========================
+
+def get_short_memory(user_id: str, limit: int = 20) -> list:
+    res = db_client.table("evosgpt_memory") \
         .select("role, content") \
         .eq("user_id", user_id) \
         .order("created_at", desc=True) \
         .limit(limit) \
         .execute()
-    messages = res.data or []
-    return list(reversed(messages))
+    return list(reversed(res.data or []))
 
 
-def get_long_memory(user_id: int) -> Optional[str]:
-    res = supabase.table("evosgpt_long_memory") \
+def get_long_memory(user_id: str) -> Optional[str]:
+    res = db_client.table("evosgpt_long_memory") \
         .select("summary") \
         .eq("user_id", user_id) \
         .limit(1) \
         .execute()
-    if res.data:
-        return res.data[0].get("summary")
-    return None
+    return res.data[0].get("summary") if res.data else None
 
 
-def save_message(user_id: int, role: str, content: str):
-    supabase.table("evosgpt_memory").insert({
-        "user_id": user_id,
-        "role": role,
-        "content": content,
+def save_message(user_id: str, role: str, content: str):
+    db_client.table("evosgpt_memory").insert({
+        "user_id":    user_id,
+        "role":       role,
+        "content":    content,
         "created_at": datetime.now(timezone.utc).isoformat()
     }).execute()
 
 
-def trim_memory(user_id: int, tier: str):
+def trim_memory(user_id: str, tier: str):
     limit = TIER_MEMORY_LIMIT.get(tier, 20)
-    res = supabase.table("evosgpt_memory") \
+    res = db_client.table("evosgpt_memory") \
         .select("id") \
         .eq("user_id", user_id) \
         .order("created_at", desc=False) \
         .execute()
     rows = res.data or []
     if len(rows) > limit:
-        excess = len(rows) - limit
-        ids_to_delete = [r["id"] for r in rows[:excess]]
+        ids_to_delete = [r["id"] for r in rows[:len(rows) - limit]]
         for rid in ids_to_delete:
-            supabase.table("evosgpt_memory") \
+            db_client.table("evosgpt_memory") \
                 .delete() \
                 .eq("id", rid) \
                 .execute()
 
 
-def update_long_memory(user_id: int, tier: str, new_summary: str):
+def update_long_memory(user_id: str, new_summary: str):
     existing = get_long_memory(user_id)
     if existing:
-        # Merge old + new summary
-        merge_prompt = f"""Merge these two summaries of the same user into one concise paragraph.
-Old: {existing}
-New: {new_summary}"""
+        merge_prompt = f"Merge these two summaries of the same user into one concise paragraph.\nOld: {existing}\nNew: {new_summary}"
         merged = call_openai("gpt-4o-mini", "You are a memory summarizer.", merge_prompt)
         summary = merged or new_summary
-        supabase.table("evosgpt_long_memory") \
+        db_client.table("evosgpt_long_memory") \
             .update({"summary": summary, "updated_at": datetime.now(timezone.utc).isoformat()}) \
             .eq("user_id", user_id) \
             .execute()
     else:
-        supabase.table("evosgpt_long_memory").insert({
-            "user_id": user_id,
-            "summary": new_summary,
+        db_client.table("evosgpt_long_memory").insert({
+            "user_id":    user_id,
+            "summary":    new_summary,
             "updated_at": datetime.now(timezone.utc).isoformat()
         }).execute()
 
 
+# =========================
+# AI HELPERS
+# =========================
+
 def build_system_prompt(tier: str, long_memory: Optional[str]) -> str:
     base = {
-        "Basic": "You are EVOSGPT, a helpful and friendly AI assistant. Keep answers clear and concise.",
-        "Core": "You are EVOSGPT, a structured and helpful AI assistant. Use numbered lists and bullet points for clarity.",
-        "Pro": "You are EVOSGPT, a confident and insightful AI assistant. Provide detailed, well-structured answers with examples.",
-        "King": "You are EVOSGPT, a powerful and strategic AI. Provide expert-level answers with deep insights and pro tips.",
+        "Basic":   "You are EVOSGPT, a helpful and friendly AI assistant. Keep answers clear and concise.",
+        "Core":    "You are EVOSGPT, a structured and helpful AI assistant. Use numbered lists and bullet points for clarity.",
+        "Pro":     "You are EVOSGPT, a confident and insightful AI assistant. Provide detailed, well-structured answers with examples.",
+        "King":    "You are EVOSGPT, a powerful and strategic AI. Provide expert-level answers with deep insights and pro tips.",
         "Founder": "You are EVOSGPT in Founder mode. You are witty, exclusive, and razor-sharp. Add personality to every response.",
     }
     prompt = base.get(tier, base["Basic"])
@@ -220,7 +251,7 @@ def call_openai(model: str, system: str, user_message: str, history: list = []) 
             "https://api.openai.com/v1/chat/completions",
             headers={
                 "Authorization": f"Bearer {OPENAI_API_KEY}",
-                "Content-Type": "application/json"
+                "Content-Type":  "application/json"
             },
             json={"model": model, "messages": messages},
             timeout=30
@@ -232,15 +263,11 @@ def call_openai(model: str, system: str, user_message: str, history: list = []) 
         return None
 
 
-def summarize_recent_memory(user_id: int, history: list) -> Optional[str]:
+def summarize_recent_memory(history: list) -> Optional[str]:
     if not history:
         return None
     conversation = "\n".join([f"{h['role'].capitalize()}: {h['content']}" for h in history[-10:]])
-    prompt = f"""Summarize this conversation in one concise paragraph. 
-Focus on the user's goals, personality, and key topics discussed.
-
-Conversation:
-{conversation}"""
+    prompt = f"Summarize this conversation in one concise paragraph. Focus on the user's goals, personality, and key topics.\n\nConversation:\n{conversation}"
     return call_openai("gpt-4o-mini", "You are a memory summarizer.", prompt)
 
 
@@ -252,15 +279,15 @@ Conversation:
 def register(data: RegisterRequest):
     try:
         username = data.username.strip().lower()
-        email = data.email.strip().lower()
+        email    = data.email.strip().lower()
 
         if len(username) < 3:
             raise HTTPException(400, "Username must be at least 3 characters")
         if len(data.password) < 6:
             raise HTTPException(400, "Password must be at least 6 characters")
 
-        # Check username taken
-        existing = supabase.table("evosgpt_users") \
+        # Check username taken in profiles
+        existing = db_client.table("profiles") \
             .select("id") \
             .eq("username", username) \
             .limit(1) \
@@ -268,52 +295,33 @@ def register(data: RegisterRequest):
         if existing.data:
             return {"status": "username_taken"}
 
-        # Check email taken
-        existing_email = supabase.table("evosgpt_users") \
-            .select("id") \
-            .eq("email", email) \
-            .limit(1) \
-            .execute()
-        if existing_email.data:
+        # Register via Supabase Auth (handles hashing + sessions)
+        auth_res = auth_client.auth.sign_up({
+            "email":    email,
+            "password": data.password,
+        })
+
+        if not auth_res.user:
             return {"status": "email_taken"}
 
-        # Generate referral code
-        referral_code = f"EVOS-{username[:4].upper()}-{uuid.uuid4().hex[:4].upper()}"
+        user_id = auth_res.user.id
 
-        # Insert user
-        insert = supabase.table("evosgpt_users").insert({
-            "username": username,
-            "email": email,
-            "password": hash_password(data.password),
-            "tier": "Basic",
-            "referral_code": referral_code,
-            "referred_by": data.referred_by or None,
-            "created_at": datetime.now(timezone.utc).isoformat()
-        }).execute()
-
-        if not insert.data:
-            raise HTTPException(500, "Registration failed")
-
-        user = insert.data[0]
-
-        # Credit referrer if applicable
-        if data.referred_by:
-            supabase.table("evosgpt_users") \
-                .update({"referral_count": supabase.table("evosgpt_users")
-                    .select("referral_count")
-                    .eq("referral_code", data.referred_by)
-                    .limit(1).execute().data[0].get("referral_count", 0) + 1}) \
-                .eq("referral_code", data.referred_by) \
-                .execute()
+        # Create profile linked to auth.users.id
+        referral_code = create_profile(
+            user_id=user_id,
+            username=username,
+            email=email,
+            referred_by=data.referred_by
+        )
 
         return {
             "status": "created",
             "user": {
-                "id": user["id"],
-                "username": user["username"],
-                "email": user["email"],
-                "tier": user["tier"],
-                "referral_code": user["referral_code"],
+                "id":            user_id,
+                "username":      username,
+                "email":         email,
+                "tier":          "Basic",
+                "referral_code": referral_code,
             }
         }
 
@@ -327,31 +335,34 @@ def register(data: RegisterRequest):
 @app.post("/auth/login")
 def login(data: LoginRequest):
     try:
-        username = data.username.strip().lower()
+        email = data.email.strip().lower()
 
-        res = supabase.table("evosgpt_users") \
-            .select("*") \
-            .or_(f"username.eq.{username},email.eq.{username}") \
-            .limit(1) \
-            .execute()
+        # Supabase Auth verifies password
+        auth_res = auth_client.auth.sign_in_with_password({
+            "email":    email,
+            "password": data.password,
+        })
 
-        if not res.data:
+        if not auth_res.user:
             return {"status": "invalid_credentials"}
 
-        user = res.data[0]
+        user_id = auth_res.user.id
 
-        if not verify_password(data.password, user["password"]):
-            return {"status": "invalid_credentials"}
+        # Fetch from shared profiles table
+        profile = get_profile(user_id)
+
+        if not profile:
+            return {"status": "profile_not_found"}
 
         return {
             "status": "ok",
             "user": {
-                "id": user["id"],
-                "username": user["username"],
-                "email": user["email"],
-                "tier": user["tier"],
-                "referral_code": user.get("referral_code", ""),
-                "referred_by": user.get("referred_by", ""),
+                "id":            user_id,
+                "username":      profile.get("username", ""),
+                "email":         profile.get("email", ""),
+                "tier":          profile.get("tier", "Basic"),
+                "referral_code": profile.get("referral_code", ""),
+                "referred_by":   profile.get("referred_by", ""),
             }
         }
 
@@ -373,42 +384,33 @@ def chat(data: ChatRequest):
         if not message:
             raise HTTPException(400, "Message cannot be empty")
 
-        # Get tier
-        tier = get_user_tier(user_id)
+        tier  = get_user_tier(user_id)
         model = TIER_MODELS.get(tier, "gpt-4o-mini")
 
-        # Get memory
-        short_memory = get_short_memory(user_id, limit=TIER_MEMORY_LIMIT.get(tier, 20))
-        long_memory = get_long_memory(user_id)
-
-        # Build system prompt
+        short_memory  = get_short_memory(user_id, limit=TIER_MEMORY_LIMIT.get(tier, 20))
+        long_memory   = get_long_memory(user_id)
         system_prompt = build_system_prompt(tier, long_memory)
 
-        # Call OpenAI
         reply = call_openai(model, system_prompt, message, short_memory)
 
         if not reply:
             raise HTTPException(500, "AI service unavailable")
 
-        # Save messages
         save_message(user_id, "user", message)
         save_message(user_id, "assistant", reply)
-
-        # Trim memory to tier limit
         trim_memory(user_id, tier)
 
-        # Update long memory every 10 messages
-        total_messages = len(short_memory) + 1
-        if total_messages % 10 == 0:
-            summary = summarize_recent_memory(user_id, short_memory)
+        total = len(short_memory) + 1
+        if total % 10 == 0:
+            summary = summarize_recent_memory(short_memory)
             if summary:
-                update_long_memory(user_id, tier, summary)
+                update_long_memory(user_id, summary)
 
         return {
             "status": "ok",
-            "reply": reply,
-            "tier": tier,
-            "model": model,
+            "reply":  reply,
+            "tier":   tier,
+            "model":  model,
         }
 
     except HTTPException:
@@ -425,12 +427,10 @@ def chat(data: ChatRequest):
 @app.get("/memory/{user_id}")
 def get_memory(user_id: str):
     try:
-        short = get_short_memory(user_id, limit=50)
-        long = get_long_memory(user_id)
         return {
-            "status": "ok",
-            "short_memory": short,
-            "long_memory": long,
+            "status":       "ok",
+            "short_memory": get_short_memory(user_id, limit=50),
+            "long_memory":  get_long_memory(user_id),
         }
     except Exception as e:
         print("MEMORY ERROR:", str(e))
@@ -440,10 +440,7 @@ def get_memory(user_id: str):
 @app.delete("/memory/{user_id}")
 def clear_memory(user_id: str):
     try:
-        supabase.table("evosgpt_memory") \
-            .delete() \
-            .eq("user_id", user_id) \
-            .execute()
+        db_client.table("evosgpt_memory").delete().eq("user_id", user_id).execute()
         return {"status": "ok", "message": "Memory cleared"}
     except Exception as e:
         print("CLEAR MEMORY ERROR:", str(e))
@@ -457,29 +454,18 @@ def clear_memory(user_id: str):
 @app.get("/user/{user_id}")
 def get_user(user_id: str):
     try:
-        res = supabase.table("evosgpt_users") \
-            .select("id, username, email, tier, referral_code, referred_by, referral_count, created_at") \
-            .eq("id", user_id) \
-            .limit(1) \
-            .execute()
-
-        if not res.data:
+        profile = get_profile(user_id)
+        if not profile:
             raise HTTPException(404, "User not found")
 
-        user = res.data[0]
-
-        # Get message count
-        mem_res = supabase.table("evosgpt_memory") \
+        mem_res = db_client.table("evosgpt_memory") \
             .select("id", count="exact") \
             .eq("user_id", user_id) \
             .execute()
 
         return {
             "status": "ok",
-            "user": {
-                **user,
-                "message_count": mem_res.count or 0,
-            }
+            "user": {**profile, "message_count": mem_res.count or 0}
         }
     except HTTPException:
         raise
@@ -499,23 +485,17 @@ def init_upgrade(data: UpgradeRequest):
             raise HTTPException(400, "Invalid tier")
 
         amount_ghs = TIER_PRICES_GHS[data.tier]
-        reference = f"EVOS-GPT-{data.user_id}-{uuid.uuid4().hex[:8].upper()}"
+        reference  = f"EVOS-GPT-{data.user_id[:8]}-{uuid.uuid4().hex[:8].upper()}"
 
         paystack = requests.post(
             "https://api.paystack.co/transaction/initialize",
-            headers={
-                "Authorization": f"Bearer {PAYSTACK_SECRET}",
-                "Content-Type": "application/json"
-            },
+            headers={"Authorization": f"Bearer {PAYSTACK_SECRET}", "Content-Type": "application/json"},
             json={
-                "email": data.email,
-                "amount": int(amount_ghs * 100),
-                "reference": reference,
+                "email":        data.email,
+                "amount":       int(amount_ghs * 100),
+                "reference":    reference,
                 "callback_url": "https://evosgpt.xyz/upgrade/success",
-                "metadata": {
-                    "user_id": data.user_id,
-                    "tier": data.tier,
-                }
+                "metadata":     {"user_id": data.user_id, "tier": data.tier}
             },
             timeout=15
         ).json()
@@ -523,19 +503,18 @@ def init_upgrade(data: UpgradeRequest):
         if not paystack.get("status"):
             raise HTTPException(400, "Payment initialization failed")
 
-        # Save pending purchase
-        supabase.table("evosgpt_purchases").insert({
-            "user_id": data.user_id,
-            "tier": data.tier,
-            "reference": reference,
-            "status": "pending",
+        db_client.table("evosgpt_purchases").insert({
+            "user_id":    data.user_id,
+            "tier":       data.tier,
+            "reference":  reference,
+            "status":     "pending",
             "created_at": datetime.now(timezone.utc).isoformat()
         }).execute()
 
         return {
-            "status": "ok",
+            "status":      "ok",
             "payment_url": paystack["data"]["authorization_url"],
-            "reference": reference,
+            "reference":   reference,
         }
 
     except HTTPException:
@@ -548,14 +527,9 @@ def init_upgrade(data: UpgradeRequest):
 @app.post("/webhook/paystack")
 async def paystack_webhook(request: Request):
     try:
-        body = await request.body()
+        body      = await request.body()
         signature = request.headers.get("x-paystack-signature", "")
-
-        computed = hmac.new(
-            PAYSTACK_SECRET.encode("utf-8"),
-            body,
-            hashlib.sha512
-        ).hexdigest()
+        computed  = hmac.new(PAYSTACK_SECRET.encode("utf-8"), body, hashlib.sha512).hexdigest()
 
         if not hmac.compare_digest(computed, signature):
             return {"status": "invalid signature"}
@@ -565,37 +539,24 @@ async def paystack_webhook(request: Request):
         if payload.get("event") != "charge.success":
             return {"status": "ignored"}
 
-        data = payload["data"]
+        data      = payload["data"]
         reference = data["reference"]
-        meta = data.get("metadata", {})
-
-        user_id = meta.get("user_id")
-        tier = meta.get("tier")
+        meta      = data.get("metadata", {})
+        user_id   = meta.get("user_id")
+        tier      = meta.get("tier")
 
         if not user_id or not tier:
             return {"status": "missing metadata"}
 
-        # Check not already processed
-        existing = supabase.table("evosgpt_purchases") \
-            .select("id, status") \
-            .eq("reference", reference) \
-            .limit(1) \
-            .execute()
+        existing = db_client.table("evosgpt_purchases") \
+            .select("id, status").eq("reference", reference).limit(1).execute()
 
         if existing.data and existing.data[0]["status"] == "paid":
             return {"status": "already processed"}
 
-        # Upgrade user tier
-        supabase.table("evosgpt_users") \
-            .update({"tier": tier}) \
-            .eq("id", user_id) \
-            .execute()
-
-        # Mark purchase paid
-        supabase.table("evosgpt_purchases") \
-            .update({"status": "paid"}) \
-            .eq("reference", reference) \
-            .execute()
+        # Upgrade tier in shared profiles table
+        db_client.table("profiles").update({"tier": tier}).eq("id", user_id).execute()
+        db_client.table("evosgpt_purchases").update({"status": "paid"}).eq("reference", reference).execute()
 
         print(f"✅ User {user_id} upgraded to {tier}")
         return {"status": "success"}
@@ -613,38 +574,20 @@ async def paystack_webhook(request: Request):
 def redeem_coupon(data: CouponRequest):
     try:
         code = data.code.strip().upper()
-
-        res = supabase.table("evosgpt_coupons") \
-            .select("*") \
-            .eq("code", code) \
-            .limit(1) \
-            .execute()
+        res  = db_client.table("evosgpt_coupons").select("*").eq("code", code).limit(1).execute()
 
         if not res.data:
             return {"status": "invalid", "message": "Invalid coupon code"}
 
         coupon = res.data[0]
-
         if coupon["used"]:
             return {"status": "used", "message": "Coupon already used"}
 
-        # Apply tier
-        supabase.table("evosgpt_users") \
-            .update({"tier": coupon["tier"]}) \
-            .eq("id", data.user_id) \
-            .execute()
+        # Upgrade in shared profiles table
+        db_client.table("profiles").update({"tier": coupon["tier"]}).eq("id", data.user_id).execute()
+        db_client.table("evosgpt_coupons").update({"used": True}).eq("code", code).execute()
 
-        # Mark used
-        supabase.table("evosgpt_coupons") \
-            .update({"used": True}) \
-            .eq("code", code) \
-            .execute()
-
-        return {
-            "status": "ok",
-            "message": f"Upgraded to {coupon['tier']} successfully!",
-            "tier": coupon["tier"]
-        }
+        return {"status": "ok", "message": f"Upgraded to {coupon['tier']}!", "tier": coupon["tier"]}
 
     except Exception as e:
         print("COUPON ERROR:", str(e))
@@ -658,25 +601,16 @@ def redeem_coupon(data: CouponRequest):
 @app.get("/referral/{user_id}")
 def get_referral(user_id: str):
     try:
-        res = supabase.table("evosgpt_users") \
-            .select("referral_code, referral_count") \
-            .eq("id", user_id) \
-            .limit(1) \
-            .execute()
-
-        if not res.data:
+        profile = get_profile(user_id)
+        if not profile:
             raise HTTPException(404, "User not found")
 
-        user = res.data[0]
-        referral_link = f"https://evosgpt.xyz/register?ref={user['referral_code']}"
-
         return {
-            "status": "ok",
-            "referral_code": user["referral_code"],
-            "referral_count": user.get("referral_count", 0),
-            "referral_link": referral_link,
+            "status":         "ok",
+            "referral_code":  profile["referral_code"],
+            "referral_count": profile.get("referral_count", 0),
+            "referral_link":  f"https://evosgpt.xyz/register?ref={profile['referral_code']}",
         }
-
     except HTTPException:
         raise
     except Exception as e:
@@ -690,4 +624,4 @@ def get_referral(user_id: str):
 
 @app.get("/")
 def health():
-    return {"status": "ok", "service": "EVOSGPT API"}
+    return {"status": "ok", "service": "EVOSGPT API v2"}
