@@ -486,6 +486,8 @@ def get_referral(user_id: int):
         raise HTTPException(500, "Failed")
 
 
-@app.get("/")
-def health():
+@app.api_route("/", methods=["GET", "HEAD"])
+def health(request: Request):
+    if request.method == "HEAD":
+        return Response(status_code=200)
     return {"status": "ok", "service": "EVOSGPT API", "version": "2.0", "ecosystem": "EVOS Business Hub"}
