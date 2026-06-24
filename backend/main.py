@@ -195,6 +195,7 @@ def register(data: RegisterRequest):
         username  = data.username.strip().lower()
         email     = data.email.strip().lower()
         full_name = data.full_name.strip()
+        phone     = (data.phone or "").strip()
 
         if len(username) < 3:
             raise HTTPException(400, "Username must be at least 3 characters")
@@ -206,14 +207,25 @@ def register(data: RegisterRequest):
         if db_client.table("users").select("id").eq("email", email).limit(1).execute().data:
             return {"status": "email_taken"}
 
+        try:
+            hashed_password = hash_password(data.password)
+        except Exception as e:
+            print("HASH ERROR:", e)
+            raise HTTPException(500, "Password hashing failed")
+
         referral_code = generate_referral_code(username)
 
         res = db_client.table("users").insert({
-            "username": username, "full_name": full_name, "email": email,
-            "phone": data.phone or "", "password": hash_password(data.password),
-            "referral_code": referral_code, "referred_by": data.referred_by or None,
-            "evosgpt_tier": "Basic", "role": "user",
-            "created_at": datetime.now(timezone.utc).isoformat(),
+            "username":      username,
+            "full_name":     full_name,
+            "email":         email,
+            "phone":         phone,
+            "password":      hashed_password,
+            "referral_code": referral_code,
+            "referred_by":   data.referred_by or None,
+            "evosgpt_tier":  "Basic",
+            "role":          "user",
+            "created_at":    datetime.now(timezone.utc).isoformat(),
         }).execute()
 
         if not res.data:
@@ -225,15 +237,21 @@ def register(data: RegisterRequest):
             try:
                 ref = db_client.table("users").select("id,order_count").eq("referral_code", data.referred_by).limit(1).execute()
                 if ref.data:
-                    db_client.table("users").update({"order_count": (ref.data[0].get("order_count") or 0) + 1}).eq("id", ref.data[0]["id"]).execute()
+                    db_client.table("users").update({
+                        "order_count": (ref.data[0].get("order_count") or 0) + 1
+                    }).eq("id", ref.data[0]["id"]).execute()
             except Exception as e:
                 print("REFERRAL ERROR:", e)
 
         return {
             "status": "created",
             "user": {
-                "id": user["id"], "username": user["username"], "full_name": user["full_name"],
-                "email": user["email"], "evosgpt_tier": "Basic", "referral_code": referral_code,
+                "id":            user["id"],
+                "username":      user["username"],
+                "full_name":     user["full_name"],
+                "email":         user["email"],
+                "evosgpt_tier":  "Basic",
+                "referral_code": referral_code,
             }
         }
     except HTTPException: raise
@@ -245,28 +263,44 @@ def register(data: RegisterRequest):
 @app.post("/auth/login")
 def login(data: LoginRequest):
     try:
-        identifier = data.username.strip().lower()
-        res = db_client.table("users").select("*").or_(f"username.eq.{identifier},email.eq.{identifier}").limit(1).execute()
+        identifier = (data.username or "").strip().lower()
+        if not identifier:
+            raise HTTPException(400, "Username required")
 
-        if not res.data:
+        res = db_client.table("users").select("*").or_(
+            f"username.eq.{identifier},email.eq.{identifier}"
+        ).limit(1).execute()
+
+        # Timing-safe: always run verify even if user not found
+        dummy_hash = "$2b$12$KIXzCq3C3T6tFkUd9nj6aO.WwSIFqh4fQieFzpxKx5Mj5.z1rklHC"
+        stored_password = res.data[0].get("password") if res.data else dummy_hash
+
+        try:
+            password_ok = verify_password(data.password, stored_password)
+        except Exception:
+            password_ok = False
+
+        if not res.data or not password_ok:
             return {"status": "invalid_credentials"}
 
         user = res.data[0]
-        if not verify_password(data.password, user["password"]):
-            return {"status": "invalid_credentials"}
 
         return {
             "status": "ok",
             "user": {
-                "id": user["id"], "username": user["username"], "full_name": user.get("full_name", ""),
-                "email": user["email"], "evosgpt_tier": user.get("evosgpt_tier", "Basic"),
-                "referral_code": user.get("referral_code", ""), "role": user.get("role", "user"),
+                "id":            user["id"],
+                "username":      user["username"],
+                "full_name":     user.get("full_name", ""),
+                "email":         user["email"],
+                "evosgpt_tier":  user.get("evosgpt_tier", "Basic"),
+                "referral_code": user.get("referral_code", ""),
+                "role":          user.get("role", "user"),
             }
         }
+    except HTTPException: raise
     except Exception as e:
         print("LOGIN ERROR:", e)
         raise HTTPException(500, "Server error")
-
 
 @app.post("/chat")
 def chat(data: ChatRequest):
