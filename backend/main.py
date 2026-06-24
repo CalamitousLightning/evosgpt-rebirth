@@ -1,5 +1,6 @@
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse, Response  # ← add this line
 from pydantic import BaseModel, EmailStr
 from typing import Optional
 from supabase import create_client, Client
