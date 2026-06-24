@@ -1,7 +1,7 @@
 import axios from "axios";
 
 const API = axios.create({
-  baseURL: import.meta.env.VITE_API_URL || "https://evosgpt-api.onrender.com",
+  baseURL: import.meta.env.VITE_API_URL || "https://api.evosgpt.xyz",
 });
 
 export const registerUser = (d)  => API.post("/auth/register", d);
