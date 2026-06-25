@@ -1,9 +1,37 @@
 export default function Home({ setPage, user }) {
   return (
     <div style={{ fontFamily: "Inter,sans-serif", background: "#070d1a", minHeight: "100vh", color: "#e2e8f0" }}>
+      <style>{`
+        @media (max-width: 600px) {
+          .hero-btns { flex-direction: column !important; align-items: stretch !important; }
+          .hero-btns button { max-width: 100% !important; }
+          .stats-row { gap: 8px !important; }
+          .stats-row > div { flex: 1 1 calc(50% - 8px) !important; min-width: 0 !important; }
+          .who-grid { grid-template-columns: repeat(2, 1fr) !important; }
+          .output-grid { grid-template-columns: 1fr !important; }
+          .memory-grid { grid-template-columns: 1fr !important; gap: 20px !important; }
+          .pricing-grid { grid-template-columns: 1fr !important; }
+          .crossell-box { flex-direction: column !important; }
+          .footer-inner { flex-direction: column !important; gap: 12px !important; }
+          .footer-links { gap: 14px !important; }
+          .nav-inner { padding: 12px 16px !important; }
+          .hero-section { padding: 44px 16px 36px !important; }
+          .section-pad { padding-left: 16px !important; padding-right: 16px !important; }
+          .memory-pad { padding: 24px 18px !important; }
+          .pricing-card { padding: 22px 16px !important; }
+        }
+        @media (min-width: 601px) and (max-width: 900px) {
+          .who-grid { grid-template-columns: repeat(3, 1fr) !important; }
+          .pricing-grid { grid-template-columns: repeat(2, 1fr) !important; }
+        }
+        @media (min-width: 901px) {
+          .who-grid { grid-template-columns: repeat(6, 1fr) !important; }
+          .pricing-grid { grid-template-columns: repeat(3, 1fr) !important; }
+        }
+      `}</style>
 
       {/* NAV */}
-      <nav style={{ maxWidth: 1100, margin: "0 auto", padding: "16px 20px", display: "flex", justifyContent: "space-between", alignItems: "center", borderBottom: "1px solid rgba(255,255,255,0.06)" }}>
+      <nav className="nav-inner" style={{ maxWidth: 1100, margin: "0 auto", padding: "16px 24px", display: "flex", justifyContent: "space-between", alignItems: "center", borderBottom: "1px solid rgba(255,255,255,0.06)" }}>
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
           <span style={{ fontSize: 24 }}>⚡</span>
           <span style={{ fontSize: 18, fontWeight: 900, background: "linear-gradient(135deg,#38bdf8,#a78bfa)", WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent" }}>EVOSGPT</span>
@@ -24,19 +52,19 @@ export default function Home({ setPage, user }) {
       </nav>
 
       {/* HERO */}
-      <section style={{ maxWidth: 800, margin: "0 auto", textAlign: "center", padding: "60px 20px 50px" }}>
+      <section className="hero-section" style={{ maxWidth: 800, margin: "0 auto", textAlign: "center", padding: "70px 24px 56px" }}>
         <div style={{ display: "inline-block", padding: "5px 16px", borderRadius: 50, background: "rgba(56,189,248,0.1)", border: "1px solid rgba(56,189,248,0.25)", color: "#38bdf8", fontSize: 12, fontWeight: 700, marginBottom: 24 }}>
           🇬🇭 Part of the EVOS Business Hub Ecosystem
         </div>
-        <h1 style={{ fontSize: "clamp(28px,6vw,58px)", fontWeight: 900, lineHeight: 1.1, marginBottom: 18, padding: "0 4px" }}>
+        <h1 style={{ fontSize: "clamp(30px,6vw,58px)", fontWeight: 900, lineHeight: 1.1, marginBottom: 18 }}>
           The AI That{" "}
           <span style={{ background: "linear-gradient(135deg,#38bdf8,#a78bfa,#22c55e)", WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent" }}>Evolves With You</span>
         </h1>
-        <p style={{ fontSize: "clamp(14px,2vw,17px)", color: "#94a3b8", lineHeight: 1.75, marginBottom: 32, maxWidth: 560, margin: "0 auto 32px" }}>
+        <p style={{ fontSize: "clamp(14px,2vw,17px)", color: "#94a3b8", lineHeight: 1.8, margin: "0 auto 32px", maxWidth: 560 }}>
           EVOSGPT remembers your style, your goals, and your history — getting smarter every conversation. Built for developers, designers, writers and entrepreneurs.
         </p>
-        <div style={{ display: "flex", justifyContent: "center", gap: 10, flexWrap: "wrap", padding: "0 8px" }}>
-          <button onClick={() => setPage(user ? "chat" : "register")} style={{ padding: "14px 28px", borderRadius: 14, border: "none", background: "linear-gradient(135deg,#38bdf8,#0ea5e9)", color: "#000", fontWeight: 900, fontSize: 15, cursor: "pointer", boxShadow: "0 4px 28px rgba(56,189,248,0.3)", flex: "1 1 auto", maxWidth: 260 }}>
+        <div className="hero-btns" style={{ display: "flex", justifyContent: "center", gap: 10, flexWrap: "wrap" }}>
+          <button onClick={() => setPage(user ? "chat" : "register")} style={{ padding: "14px 28px", borderRadius: 14, border: "none", background: "linear-gradient(135deg,#38bdf8,#0ea5e9)", color: "#000", fontWeight: 900, fontSize: 15, cursor: "pointer", boxShadow: "0 4px 28px rgba(56,189,248,0.3)", flex: "1 1 auto", maxWidth: 280 }}>
             💬 Start Chatting — Free
           </button>
           {!user && (
@@ -46,10 +74,9 @@ export default function Home({ setPage, user }) {
           )}
         </div>
 
-        {/* STATS ROW */}
-        <div style={{ display: "flex", justifyContent: "center", gap: 10, flexWrap: "wrap", marginTop: 40, padding: "0 4px" }}>
+        <div className="stats-row" style={{ display: "flex", justifyContent: "center", gap: 10, flexWrap: "wrap", marginTop: 40 }}>
           {[["GPT-4o","Pro Engine"],["Memory","Evolves Per User"],["Clean Output","Code & Letters"],["24/7","Always On"]].map(([v, l]) => (
-            <div key={v} style={{ background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.07)", borderRadius: 12, padding: "12px 18px", textAlign: "center", flex: "1 1 80px" }}>
+            <div key={v} style={{ background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.07)", borderRadius: 12, padding: "12px 16px", textAlign: "center", flex: "1 1 90px" }}>
               <div style={{ fontWeight: 900, fontSize: 14, color: "#38bdf8" }}>{v}</div>
               <div style={{ fontSize: 11, color: "#64748b", marginTop: 3 }}>{l}</div>
             </div>
@@ -58,12 +85,12 @@ export default function Home({ setPage, user }) {
       </section>
 
       {/* WHO IT'S FOR */}
-      <section style={{ maxWidth: 1100, margin: "0 auto", padding: "10px 20px 60px" }}>
+      <section style={{ maxWidth: 1100, margin: "0 auto", padding: "10px 24px 60px" }}>
         <div style={{ textAlign: "center", marginBottom: 36 }}>
           <Tag>Who It's For</Tag>
           <h2 style={{ fontSize: "clamp(20px,3vw,30px)", fontWeight: 900, color: "#f1f5f9", margin: "12px 0 0" }}>Built for every professional</h2>
         </div>
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(160px,1fr))", gap: 12 }}>
+        <div className="who-grid" style={{ display: "grid", gap: 12 }}>
           {[
             ["💻","Developers","Clean code, debugging, architecture — production-ready."],
             ["🎨","Designers","Flyer copy, design briefs, color ideas, creative concepts."],
@@ -82,12 +109,12 @@ export default function Home({ setPage, user }) {
       </section>
 
       {/* SMART OUTPUT */}
-      <section style={{ maxWidth: 1100, margin: "0 auto", padding: "0 20px 60px" }}>
+      <section style={{ maxWidth: 1100, margin: "0 auto", padding: "0 24px 60px" }}>
         <div style={{ textAlign: "center", marginBottom: 36 }}>
           <Tag>Smart Output</Tag>
           <h2 style={{ fontSize: "clamp(20px,3vw,30px)", fontWeight: 900, color: "#f1f5f9", margin: "12px 0 0" }}>Formatted, clean, copy-paste ready</h2>
         </div>
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(280px,1fr))", gap: 16 }}>
+        <div className="output-grid" style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(280px,1fr))", gap: 16 }}>
           <div style={{ background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.07)", borderRadius: 18, overflow: "hidden" }}>
             <div style={{ padding: "12px 16px", borderBottom: "1px solid rgba(255,255,255,0.06)", fontWeight: 800, fontSize: 13, color: "#f1f5f9" }}>💻 Code Output</div>
             <div style={{ background: "#020817" }}>
@@ -102,7 +129,6 @@ print(calculate_profit(5000, 3200))
             </div>
             <div style={{ padding: "8px 14px", fontSize: 12, color: "#38bdf8" }}>📋 Copy the above and paste directly.</div>
           </div>
-
           <div style={{ background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.07)", borderRadius: 18, padding: "18px 20px" }}>
             <div style={{ fontWeight: 800, fontSize: 13, color: "#f1f5f9", marginBottom: 14 }}>✍️ Letter Output</div>
             <p style={{ color: "#64748b", fontSize: 13, marginBottom: 8 }}>12th June, 2026</p>
@@ -114,13 +140,13 @@ print(calculate_profit(5000, 3200))
         </div>
       </section>
 
-      {/* MEMORY SECTION */}
-      <section style={{ maxWidth: 1100, margin: "0 auto", padding: "0 20px 60px" }}>
-        <div style={{ background: "linear-gradient(135deg,rgba(56,189,248,0.07),rgba(167,139,250,0.07))", border: "1px solid rgba(255,255,255,0.07)", borderRadius: 22, padding: "36px 28px", display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(240px,1fr))", gap: 32, alignItems: "center" }}>
+      {/* MEMORY */}
+      <section style={{ maxWidth: 1100, margin: "0 auto", padding: "0 24px 60px" }}>
+        <div className="memory-grid" style={{ background: "linear-gradient(135deg,rgba(56,189,248,0.07),rgba(167,139,250,0.07))", border: "1px solid rgba(255,255,255,0.07)", borderRadius: 22, padding: "40px 32px", display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(240px,1fr))", gap: 32, alignItems: "center" }}>
           <div>
             <Tag>Evolving Memory</Tag>
             <h2 style={{ fontSize: "clamp(20px,3vw,28px)", fontWeight: 900, color: "#f1f5f9", margin: "12px 0 12px" }}>EVOSGPT gets smarter every session</h2>
-            <p style={{ color: "#94a3b8", lineHeight: 1.75, fontSize: 14 }}>Unlike other AI tools, EVOSGPT builds a memory of who you are — your goals, your writing style, your projects. Each conversation makes it more tailored to you.</p>
+            <p style={{ color: "#94a3b8", lineHeight: 1.8, fontSize: 14 }}>Unlike other AI tools, EVOSGPT builds a memory of who you are — your goals, your writing style, your projects. Each conversation makes it more tailored to you.</p>
           </div>
           <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
             {[
@@ -141,12 +167,12 @@ print(calculate_profit(5000, 3200))
       </section>
 
       {/* PRICING */}
-      <section style={{ maxWidth: 1100, margin: "0 auto", padding: "0 20px 60px" }}>
+      <section style={{ maxWidth: 1100, margin: "0 auto", padding: "0 24px 60px" }}>
         <div style={{ textAlign: "center", marginBottom: 36 }}>
           <Tag>Pricing</Tag>
           <h2 style={{ fontSize: "clamp(20px,3vw,30px)", fontWeight: 900, color: "#f1f5f9", margin: "12px 0 0" }}>Simple, honest pricing</h2>
         </div>
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(240px,1fr))", gap: 16, maxWidth: 820, margin: "0 auto" }}>
+        <div className="pricing-grid" style={{ display: "grid", gap: 16, maxWidth: 860, margin: "0 auto" }}>
           {[
             { name:"Basic", icon:"🧊", price:"Free", color:"#64748b", rgb:"100,116,139", model:"GPT-4o-mini",
               perks:["10 chats per day","20 message memory","General AI assistant","Access to EVOS ecosystem"],
@@ -154,11 +180,11 @@ print(calculate_profit(5000, 3200))
             { name:"Pro", icon:"⚡", price:"GH₵20/mo", color:"#38bdf8", rgb:"56,189,248", model:"GPT-4o",
               perks:["Unlimited chats","100 message memory","Code & dev expert","Design & flyer briefs","Letter & document writing","Evolving long-term memory"],
               cta:"Upgrade to Pro", primary:true },
-            { name:"Core", icon:"🔥", price:"GH₵50/mo", color:"#a78bfa", rgb:"167,139,250", model:"GPT-4o (Max Power)",
+            { name:"Core", icon:"🔥", price:"GH₵70/mo", color:"#a78bfa", rgb:"167,139,250", model:"GPT-4o (Max Power)",
               perks:["Unlimited chats","300 message memory","All Pro features","Deepest AI responses","Priority everything","Full persona calibration"],
               cta:"Go Core", primary:false },
           ].map(t => (
-            <div key={t.name} style={{ background: `rgba(${t.rgb},0.07)`, border: `1px solid ${t.color}33`, borderRadius: 22, padding: "24px 20px", position: "relative" }}>
+            <div className="pricing-card" key={t.name} style={{ background: `rgba(${t.rgb},0.07)`, border: `1px solid ${t.color}33`, borderRadius: 22, padding: "26px 22px", position: "relative" }}>
               {t.primary && (
                 <div style={{ position: "absolute", top: -12, left: "50%", transform: "translateX(-50%)", background: "#38bdf8", color: "#000", fontWeight: 900, fontSize: 11, padding: "4px 14px", borderRadius: 50, whiteSpace: "nowrap" }}>
                   ⭐ MOST POPULAR
@@ -167,7 +193,7 @@ print(calculate_profit(5000, 3200))
               <div style={{ fontSize: 32, marginBottom: 8 }}>{t.icon}</div>
               <div style={{ fontSize: 20, fontWeight: 900, color: t.color, marginBottom: 3 }}>{t.name}</div>
               <div style={{ fontSize: 11, color: "#475569", marginBottom: 12 }}>{t.model}</div>
-              <div style={{ fontSize: 24, fontWeight: 900, color: t.color, marginBottom: 18 }}>{t.price}</div>
+              <div style={{ fontSize: 26, fontWeight: 900, color: t.color, marginBottom: 18 }}>{t.price}</div>
               <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 22 }}>
                 {t.perks.map(p => (
                   <div key={p} style={{ fontSize: 13, color: "#94a3b8", display: "flex", gap: 8 }}>
@@ -175,9 +201,8 @@ print(calculate_profit(5000, 3200))
                   </div>
                 ))}
               </div>
-              <button
-                onClick={() => setPage(user ? (t.name === "Basic" ? "chat" : "upgrade") : "register")}
-                style={{ width: "100%", padding: "12px", borderRadius: 12, border: `1px solid ${t.color}`, background: t.primary ? t.color : "transparent", color: t.primary ? "#000" : t.color, fontWeight: 900, fontSize: 14, cursor: "pointer" }}>
+              <button onClick={() => setPage(user ? (t.name === "Basic" ? "chat" : "upgrade") : "register")}
+                style={{ width: "100%", padding: "13px", borderRadius: 12, border: `1px solid ${t.color}`, background: t.primary ? t.color : "transparent", color: t.primary ? "#000" : t.color, fontWeight: 900, fontSize: 14, cursor: "pointer" }}>
                 {t.cta}
               </button>
             </div>
@@ -185,35 +210,35 @@ print(calculate_profit(5000, 3200))
         </div>
       </section>
 
-      {/* EVOSDATA CROSSELL */}
-      <section style={{ maxWidth: 1100, margin: "0 auto", padding: "0 20px 60px" }}>
-        <div style={{ background: "linear-gradient(135deg,rgba(34,197,94,0.08),rgba(16,185,129,0.05))", border: "1px solid rgba(34,197,94,0.2)", borderRadius: 22, padding: "30px 24px", display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 20 }}>
+      {/* EVOSDATA */}
+      <section style={{ maxWidth: 1100, margin: "0 auto", padding: "0 24px 60px" }}>
+        <div className="crossell-box" style={{ background: "linear-gradient(135deg,rgba(34,197,94,0.08),rgba(16,185,129,0.05))", border: "1px solid rgba(34,197,94,0.2)", borderRadius: 22, padding: "30px 28px", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 20 }}>
           <div>
             <div style={{ fontSize: 12, color: "#22c55e", fontWeight: 700, marginBottom: 6 }}>🔗 EVOS Ecosystem</div>
             <h3 style={{ fontSize: "clamp(16px,2.5vw,20px)", fontWeight: 900, color: "#f1f5f9", marginBottom: 6 }}>Need data to keep chatting?</h3>
-            <p style={{ color: "#64748b", fontSize: 13 }}>Buy affordable Ghana data bundles instantly on EvosData.</p>
+            <p style={{ color: "#64748b", fontSize: 13, margin: 0 }}>Buy affordable Ghana data bundles instantly on EvosData.</p>
           </div>
-          <button onClick={() => window.open("https://evosdata.xyz", "_blank")} style={{ padding: "12px 24px", borderRadius: 12, border: "none", background: "linear-gradient(135deg,#22c55e,#16a34a)", color: "#fff", fontWeight: 900, fontSize: 14, cursor: "pointer", whiteSpace: "nowrap" }}>
+          <button onClick={() => window.open("https://evosdata.xyz", "_blank")} style={{ padding: "12px 24px", borderRadius: 12, border: "none", background: "linear-gradient(135deg,#22c55e,#16a34a)", color: "#fff", fontWeight: 900, fontSize: 14, cursor: "pointer", whiteSpace: "nowrap", flexShrink: 0 }}>
             📶 Buy Data on EvosData
           </button>
         </div>
       </section>
 
       {/* FOOTER */}
-      <footer style={{ borderTop: "1px solid rgba(255,255,255,0.06)", padding: "28px 20px 20px", maxWidth: 1100, margin: "0 auto" }}>
-        <div style={{ display: "flex", justifyContent: "space-between", flexWrap: "wrap", gap: 16, marginBottom: 16 }}>
+      <footer style={{ borderTop: "1px solid rgba(255,255,255,0.06)", padding: "28px 24px 20px", maxWidth: 1100, margin: "0 auto" }}>
+        <div className="footer-inner" style={{ display: "flex", justifyContent: "space-between", flexWrap: "wrap", gap: 16, marginBottom: 16 }}>
           <div>
             <div style={{ fontSize: 16, fontWeight: 900, color: "#38bdf8", marginBottom: 4 }}>⚡ EVOSGPT</div>
             <div style={{ fontSize: 12, color: "#334155" }}>Part of the EVOS Business Hub</div>
           </div>
-          <div style={{ display: "flex", gap: 20, flexWrap: "wrap", alignItems: "center" }}>
+          <div className="footer-links" style={{ display: "flex", gap: 20, flexWrap: "wrap", alignItems: "center" }}>
             {[["Login","login"],["Register","register"],["Chat","chat"]].map(([l,p]) => (
               <span key={p} onClick={() => setPage(p)} style={{ fontSize: 13, color: "#475569", cursor: "pointer", fontWeight: 600 }}>{l}</span>
             ))}
             <span onClick={() => window.open("https://evosdata.xyz","_blank")} style={{ fontSize: 13, color: "#475569", cursor: "pointer", fontWeight: 600 }}>EvosData</span>
           </div>
         </div>
-        <div style={{ fontSize: 12, color: "#1e293b", textAlign: "center" }}>© 2026 EVOS Technologies · All rights reserved</div>
+        <div style={{ fontSize: 12, color: "#334155", textAlign: "center" }}>© 2026 Evoxera Technology · All Rights Reserved</div>
       </footer>
     </div>
   );
