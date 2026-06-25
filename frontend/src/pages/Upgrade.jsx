@@ -3,12 +3,12 @@ import { initUpgrade, redeemCoupon } from "../api";
 
 const TIERS = [
   {
-    name: "Pro", icon: "⚡", price: "GH₵ 75", period: "/month", color: "#38bdf8",
+    name: "Pro", icon: "⚡", price: "GH₵ 20", period: "/month", color: "#38bdf8",
     model: "GPT-4o",
     perks: ["Unlimited chats", "100 message memory", "Code & dev expert mode", "Design & flyer briefs", "Letter & document writing", "Evolving long-term memory"],
   },
   {
-    name: "Core", icon: "🔥", price: "GH₵ 135", period: "/month", color: "#a78bfa",
+    name: "Core", icon: "🔥", price: "GH₵ 50", period: "/month", color: "#a78bfa",
     model: "GPT-4o (Max Power)",
     perks: ["Everything in Pro", "300 message memory", "Deepest, most thorough responses", "Priority processing", "Full persona calibration", "Best for power users"],
   },
