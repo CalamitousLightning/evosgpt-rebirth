@@ -421,7 +421,9 @@ def init_upgrade(data: UpgradeRequest):
         reference  = f"EVOS-GPT-{data.user_id}-{uuid.uuid4().hex[:8].upper()}"
         amount_ghs = tier_cfg["price_ghs"]
 
-        paystack = requests.post(
+        print(f"UPGRADE ATTEMPT: user={data.user_id} tier={data.tier} email={data.email} amount={amount_ghs} secret_set={bool(PAYSTACK_SECRET)}")
+
+        paystack_res = requests.post(
             "https://api.paystack.co/transaction/initialize",
             headers={"Authorization": f"Bearer {PAYSTACK_SECRET}", "Content-Type": "application/json"},
             json={
@@ -429,7 +431,9 @@ def init_upgrade(data: UpgradeRequest):
                 "reference": reference, "callback_url": "https://evosgpt.xyz/upgrade/success",
                 "metadata": {"user_id": data.user_id, "tier": data.tier, "product": "evosgpt"},
             }, timeout=15
-        ).json()
+        )
+        paystack = paystack_res.json()
+        print("PAYSTACK RESPONSE:", paystack)
 
         if not paystack.get("status"):
             raise HTTPException(400, paystack.get("message", "Payment initialization failed"))
@@ -444,7 +448,6 @@ def init_upgrade(data: UpgradeRequest):
     except Exception as e:
         print("UPGRADE ERROR:", e)
         raise HTTPException(500, "Upgrade failed")
-
 
 @app.post("/webhook/paystack")
 async def paystack_webhook(request: Request):
