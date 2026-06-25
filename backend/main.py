@@ -45,8 +45,8 @@ def verify_password(p, h): return pwd.verify(p, h)
 
 TIERS = {
     "Basic":   {"model": "gpt-4o-mini", "memory_limit": 20,   "day_limit": 10,   "price_ghs": 0,   "icon": "🧊"},
-    "Pro":     {"model": "gpt-4o",      "memory_limit": 100,  "day_limit": None, "price_ghs": 75,  "icon": "⚡"},
-    "Core":    {"model": "gpt-4o",      "memory_limit": 300,  "day_limit": None, "price_ghs": 135, "icon": "🔥"},
+    "Pro":     {"model": "gpt-4o",      "memory_limit": 100,  "day_limit": None, "price_ghs": 20,  "icon": "⚡"},
+    "Core":    {"model": "gpt-4o",      "memory_limit": 300,  "day_limit": None, "price_ghs": 50, "icon": "🔥"},
     "Founder": {"model": "gpt-4o",      "memory_limit": 1000, "day_limit": None, "price_ghs": 0,   "icon": "👑"},
 }
 PURCHASABLE_TIERS = {"Pro", "Core"}
