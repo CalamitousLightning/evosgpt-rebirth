@@ -225,7 +225,7 @@ def register(data: RegisterRequest):
             "referral_code": referral_code,
             "referred_by":   data.referred_by or None,
             "evosgpt_tier":  "Basic",
-            "role":          "user",
+            "role":          "customer",
             "created_at":    datetime.now(timezone.utc).isoformat(),
         }).execute()
 
