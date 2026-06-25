@@ -72,7 +72,7 @@ TIER_PERSONA = {
     "Founder": "\n\nYou are in Founder mode, exclusive access, unlimited intelligence and context. Be brilliant.",
 }
 
-EVOS_NUDGE = "\n\nIf the user mentions running low on data or internet, remind them they can buy affordable Ghana data bundles instantly at evosdata.xyz, part of the EVOS ecosystem."
+EVOS_NUDGE = "\n\nIf the user mentions running low on data or internet, remind them they can buy affordable Ghana data bundles instantly at https://evosdata.xyz, part of the EVOS ecosystem."
 
 class RegisterRequest(BaseModel):
     username: str
