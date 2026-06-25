@@ -10,7 +10,7 @@ const TIER_BADGE = {
   Founder: { icon: "👑", color: "#f59e0b" },
 };
 
-function CodeBlock({ value }) {
+function CodeBlock({ value, language }) {
   const [copied, setCopied] = useState(false);
   const copy = () => {
     navigator.clipboard.writeText(value);
@@ -18,9 +18,19 @@ function CodeBlock({ value }) {
     setTimeout(() => setCopied(false), 1500);
   };
   return (
-    <div style={{ position: "relative" }}>
-      <button className="copy-btn" onClick={copy}>{copied ? "✓ Copied" : "Copy"}</button>
-      <pre><code>{value}</code></pre>
+    <div style={{ margin: "10px 0", borderRadius: 8, overflow: "hidden", border: "1px solid rgba(255,255,255,0.08)" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", background: "rgba(56,189,248,0.08)", padding: "5px 12px", borderBottom: "1px solid rgba(255,255,255,0.06)" }}>
+        <span style={{ fontSize: 11, color: "#38bdf8", fontWeight: 700 }}>{language || "code"}</span>
+        <button
+          onClick={copy}
+          style={{ background: "none", border: "1px solid rgba(255,255,255,0.15)", color: copied ? "#4ade80" : "#94a3b8", fontSize: 11, fontWeight: 700, padding: "2px 10px", borderRadius: 5, cursor: "pointer" }}
+        >
+          {copied ? "✓ Copied" : "Copy"}
+        </button>
+      </div>
+      <pre style={{ margin: 0, padding: "14px 16px", background: "#020817", overflowX: "auto" }}>
+        <code style={{ fontSize: 13, fontFamily: "monospace", color: "#e2e8f0" }}>{value}</code>
+      </pre>
     </div>
   );
 }
@@ -31,10 +41,16 @@ function Markdown({ text }) {
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
         components={{
-          code({ inline, className, children }) {
-            const txt = String(children).replace(/\n$/, "");
-            if (inline) return <code>{txt}</code>;
-            return <CodeBlock value={txt} />;
+          code({ node, className, children, ...props }) {
+            const value = String(children).replace(/\n$/, "");
+            const language = className?.replace("language-", "") || "";
+            const isBlock = Boolean(className);
+            if (!isBlock) return (
+              <code style={{ background: "rgba(255,255,255,0.08)", padding: "1px 6px", borderRadius: 4, fontSize: 13, fontFamily: "monospace", color: "#38bdf8" }}>
+                {value}
+              </code>
+            );
+            return <CodeBlock value={value} language={language} />;
           },
         }}
       >
