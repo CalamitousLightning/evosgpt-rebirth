@@ -80,26 +80,46 @@ function BotBubble({ content }) {
 }
 
 export default function Chat({ setPage, user, setUser }) {
-  const [messages, setMessages]    = useState([]);
-  const [input, setInput]          = useState("");
-  const [sending, setSending]      = useState(false);
-  const [loadingHist, setLoadHist] = useState(true);
-  const [tier, setTier]            = useState(user?.evosgpt_tier || "Basic");
-  const [todayCount, setToday]     = useState(0);
-  const [dayLimit, setDayLimit]    = useState(null);
-  const [nudge, setNudge]          = useState(false);
-  const [limitHit, setLimitHit]    = useState(false);
-  const [menuOpen, setMenuOpen]    = useState(false);
+  const [messages, setMessages]       = useState([]);
+  const [input, setInput]             = useState("");
+  const [sending, setSending]         = useState(false);
+  const [loadingHist, setLoadHist]    = useState(true);
+  const [tier, setTier]               = useState(user?.evosgpt_tier || "Basic");
+  const [todayCount, setToday]        = useState(0);
+  const [dayLimit, setDayLimit]       = useState(null);
+  const [nudge, setNudge]             = useState(false);
+  const [limitHit, setLimitHit]       = useState(false);
+  const [menuOpen, setMenuOpen]       = useState(false);
+  const [showScrollBtn, setShowScrollBtn] = useState(false);
+
   const bottomRef = useRef(null);
+  const bodyRef   = useRef(null);
+  const taRef     = useRef(null);
 
   useEffect(() => {
     if (!user) { setPage("login"); return; }
     loadHistory();
   }, [user]);
 
+  // Auto-scroll to bottom on new messages
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, sending]);
+
+  const handleScroll = () => {
+    const el = bodyRef.current;
+    if (!el) return;
+    const distFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+    setShowScrollBtn(distFromBottom > 60);
+  };
+
+  const scrollSmooth = () => {
+    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+  };
+
+  const scrollInstant = () => {
+    bottomRef.current?.scrollIntoView({ behavior: "auto" });
+  };
 
   const loadHistory = async () => {
     try {
@@ -119,6 +139,10 @@ export default function Chat({ setPage, user, setUser }) {
     const text = input.trim();
     if (!text || sending) return;
     setInput("");
+    // Reset textarea height
+    if (taRef.current) {
+      taRef.current.style.height = "auto";
+    }
     setMessages(m => [...m, { role: "user", content: text }]);
     setSending(true);
     setNudge(false);
@@ -146,6 +170,13 @@ export default function Chat({ setPage, user, setUser }) {
     if (!confirm("Clear all memory? This cannot be undone.")) return;
     await clearMemory(user.id);
     setMessages([]);
+  };
+
+  const handleTextareaChange = (e) => {
+    setInput(e.target.value);
+    // Auto-expand
+    e.target.style.height = "auto";
+    e.target.style.height = Math.min(e.target.scrollHeight, 160) + "px";
   };
 
   const badge = TIER_BADGE[tier] || TIER_BADGE.Basic;
@@ -178,7 +209,7 @@ export default function Chat({ setPage, user, setUser }) {
       )}
 
       {/* MESSAGES */}
-      <div style={S.body}>
+      <div style={S.body} ref={bodyRef} onScroll={handleScroll}>
         {loadingHist ? (
           <div style={S.emptyState}>⏳ Loading your conversation...</div>
         ) : messages.length === 0 ? (
@@ -210,8 +241,32 @@ export default function Chat({ setPage, user, setUser }) {
             </div>
           </div>
         )}
+
         <div ref={bottomRef} />
       </div>
+
+      {/* SCROLL BUTTONS — shown only when not at bottom */}
+      {showScrollBtn && (
+        <div style={S.scrollBtnGroup}>
+          {/* Smooth scroll — animated */}
+          <button
+            style={S.scrollBtnSmooth}
+            title="Scroll to bottom (smooth)"
+            onClick={scrollSmooth}
+          >
+            <span style={S.scrollArrow}>›</span>
+          </button>
+          {/* Instant jump — no animation */}
+          <button
+            style={S.scrollBtnInstant}
+            title="Jump to bottom instantly"
+            onClick={scrollInstant}
+          >
+            <span style={S.scrollArrow}>›</span>
+            <span style={S.scrollArrow}>›</span>
+          </button>
+        </div>
+      )}
 
       {/* UPGRADE NUDGE */}
       {nudge && (
@@ -246,12 +301,12 @@ export default function Chat({ setPage, user, setUser }) {
       {/* INPUT */}
       <div style={S.inputBar}>
         <textarea
-          style={S.textarea}
+          ref={taRef}
+          style={{ ...S.textarea, overflowY: "hidden" }}
           placeholder="Message EVOSGPT..."
-          rows={1}
           value={input}
           disabled={limitHit}
-          onChange={e => setInput(e.target.value)}
+          onChange={handleTextareaChange}
           onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } }}
         />
         <button
@@ -275,18 +330,26 @@ const S = {
   iconBtn:   { width: 36, height: 36, borderRadius: 10, border: "none", background: "rgba(255,255,255,0.06)", color: "#e2e8f0", fontSize: 16, cursor: "pointer" },
   menu:      { position: "absolute", top: 58, right: 18, background: "#0f172a", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 14, padding: 8, zIndex: 50, minWidth: 200, boxShadow: "0 12px 30px rgba(0,0,0,0.5)" },
   menuItem:  { padding: "10px 14px", borderRadius: 10, fontSize: 14, color: "#e2e8f0", cursor: "pointer", fontWeight: 600 },
-  body:      { flex: 1, overflowY: "auto", padding: "20px 16px 10px", display: "flex", flexDirection: "column", gap: 16, maxWidth: 760, margin: "0 auto", width: "100%" },
+  body:      { flex: 1, overflowY: "auto", padding: "20px 16px 10px", display: "flex", flexDirection: "column", gap: 16, maxWidth: 760, margin: "0 auto", width: "100%", position: "relative" },
   emptyState:{ textAlign: "center", margin: "auto", maxWidth: 320 },
   msgRow:    { display: "flex" },
   bubble:    { padding: "12px 16px", borderRadius: 16, fontSize: 14.5, lineHeight: 1.6, wordBreak: "break-word" },
   userBubble:{ maxWidth: "82%", background: "linear-gradient(135deg,#38bdf8,#0ea5e9)", color: "#000", fontWeight: 600, borderBottomRightRadius: 4 },
   botBubble: { background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.06)", color: "#e2e8f0", borderBottomLeftRadius: 4 },
   copyFloating: { marginTop: 6, display: "inline-flex", alignItems: "center", gap: 4, background: "rgba(255,255,255,0.05)", border: "1px solid rgba(255,255,255,0.1)", color: "#64748b", fontSize: 11, fontWeight: 700, padding: "3px 10px", borderRadius: 6, cursor: "pointer", transition: "color 0.2s" },
+
+  // Scroll button group — sits between messages and nudge/input
+  scrollBtnGroup:  { display: "flex", gap: 6, justifyContent: "center", padding: "6px 0 2px", maxWidth: 760, margin: "0 auto", width: "100%" },
+  scrollBtnSmooth: { display: "flex", alignItems: "center", justifyContent: "center", gap: 0, background: "#0f172a", border: "1px solid rgba(255,255,255,0.15)", color: "#94a3b8", fontSize: 13, fontWeight: 800, padding: "5px 14px", borderRadius: 50, cursor: "pointer", letterSpacing: 1 },
+  scrollBtnInstant:{ display: "flex", alignItems: "center", justifyContent: "center", gap: 0, background: "#0f172a", border: "1px solid rgba(56,189,248,0.3)", color: "#38bdf8", fontSize: 13, fontWeight: 800, padding: "5px 14px", borderRadius: 50, cursor: "pointer", letterSpacing: 1 },
+  // The arrows are rotated 90deg to point downward
+  scrollArrow: { display: "inline-block", transform: "rotate(90deg)", lineHeight: 1, fontSize: 16 },
+
   nudgeBox:  { maxWidth: 760, margin: "0 auto 10px", width: "calc(100% - 32px)", background: "rgba(56,189,248,0.08)", border: "1px solid rgba(56,189,248,0.25)", borderRadius: 16, padding: "14px 18px", display: "flex", justifyContent: "space-between", alignItems: "center", gap: 14, flexWrap: "wrap" },
   limitBox:  { maxWidth: 760, margin: "0 auto 10px", width: "calc(100% - 32px)", background: "rgba(239,68,68,0.08)", border: "1px solid rgba(239,68,68,0.25)", borderRadius: 16, padding: "16px 18px" },
   nudgeBtn:  { padding: "8px 16px", borderRadius: 10, border: "none", background: "#38bdf8", color: "#000", fontWeight: 800, fontSize: 13, cursor: "pointer" },
   nudgeGhost:{ padding: "8px 14px", borderRadius: 10, border: "1px solid rgba(255,255,255,0.15)", background: "transparent", color: "#94a3b8", fontWeight: 700, fontSize: 13, cursor: "pointer" },
-  inputBar:  { display: "flex", gap: 10, padding: "14px 16px 20px", borderTop: "1px solid rgba(255,255,255,0.06)", maxWidth: 760, margin: "0 auto", width: "100%", boxSizing: "border-box" },
-  textarea:  { flex: 1, resize: "none", padding: "13px 16px", borderRadius: 16, border: "1px solid rgba(255,255,255,0.1)", background: "rgba(255,255,255,0.04)", color: "#f1f5f9", fontSize: 14.5, outline: "none", maxHeight: 120, fontFamily: "inherit" },
+  inputBar:  { display: "flex", gap: 10, padding: "14px 16px 20px", borderTop: "1px solid rgba(255,255,255,0.06)", maxWidth: 760, margin: "0 auto", width: "100%", boxSizing: "border-box", alignItems: "flex-end" },
+  textarea:  { flex: 1, resize: "none", padding: "13px 16px", borderRadius: 16, border: "1px solid rgba(255,255,255,0.1)", background: "rgba(255,255,255,0.04)", color: "#f1f5f9", fontSize: 14.5, outline: "none", minHeight: 50, maxHeight: 160, fontFamily: "inherit", lineHeight: 1.55, transition: "height 0.1s ease" },
   sendBtn:   { width: 46, height: 46, borderRadius: "50%", border: "none", background: "linear-gradient(135deg,#38bdf8,#0ea5e9)", color: "#000", fontSize: 18, cursor: "pointer", flexShrink: 0 },
 };
