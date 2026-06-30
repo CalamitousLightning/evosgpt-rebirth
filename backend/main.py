@@ -9,6 +9,11 @@ from datetime import datetime, timezone
 import os, uuid, hmac, hashlib, requests
 from dotenv import load_dotenv
 
+try:
+    from zoneinfo import ZoneInfo
+except ImportError:  # Python < 3.9 fallback
+    from backports.zoneinfo import ZoneInfo
+
 load_dotenv()
 
 app = FastAPI(title="EVOSGPT API", version="2.0")
@@ -158,6 +163,56 @@ def increment_today_count(user_id: int):
         db_client.table("evosgpt_daily_chats").insert({"user_id": user_id, "date": today, "count": 1}).execute()
 
 
+# =========================
+# GEOLOCATION + LOCAL TIME
+# =========================
+def get_client_ip(request: Request) -> str:
+    # Render/Railway/most proxies set X-Forwarded-For
+    forwarded = request.headers.get("x-forwarded-for")
+    if forwarded:
+        return forwarded.split(",")[0].strip()
+    return request.client.host if request.client else "8.8.8.8"
+
+def get_geo_context(request: Request) -> dict:
+    """
+    Looks up the caller's approximate location + local time from their IP.
+    Uses ip-api.com (free, no key required, ~45 req/min limit).
+    Falls back to UTC if the lookup fails (e.g. localhost, rate limit, no network).
+    """
+    ip = get_client_ip(request)
+    try:
+        res = requests.get(f"http://ip-api.com/json/{ip}", timeout=3)
+        data = res.json()
+        if data.get("status") != "success":
+            raise ValueError(data.get("message", "geo lookup failed"))
+
+        tz_name = data.get("timezone", "UTC")
+        try:
+            local_dt = datetime.now(ZoneInfo(tz_name))
+            local_time = local_dt.strftime("%A, %d %B %Y, %I:%M %p")
+        except Exception:
+            tz_name = "UTC"
+            local_time = datetime.now(timezone.utc).strftime("%A, %d %B %Y, %I:%M %p UTC")
+
+        return {
+            "ip": ip,
+            "city": data.get("city", ""),
+            "region": data.get("regionName", ""),
+            "country": data.get("country", ""),
+            "country_code": data.get("countryCode", ""),
+            "timezone": tz_name,
+            "local_time": local_time,
+        }
+    except Exception as e:
+        print("GEO LOOKUP ERROR:", e)
+        return {
+            "ip": ip,
+            "city": "", "region": "", "country": "", "country_code": "",
+            "timezone": "UTC",
+            "local_time": datetime.now(timezone.utc).strftime("%A, %d %B %Y, %I:%M %p UTC"),
+        }
+
+
 def call_openai(model: str, system: str, user_msg: str, history: list = []) -> Optional[str]:
     try:
         messages = [{"role": "system", "content": system}]
@@ -175,9 +230,19 @@ def call_openai(model: str, system: str, user_msg: str, history: list = []) -> O
         print("OPENAI ERROR:", e)
         return None
 
-def build_system_prompt(tier: str, long_memory: Optional[str], username: str) -> str:
+def build_system_prompt(tier: str, long_memory: Optional[str], username: str, geo: Optional[dict] = None) -> str:
     prompt = BASE_PROMPT + TIER_PERSONA.get(tier, TIER_PERSONA["Basic"]) + EVOS_NUDGE
     prompt += f"\n\nThe user's name is {username}."
+
+    if geo and geo.get("local_time"):
+        location_str = ", ".join(filter(None, [geo.get("city"), geo.get("country")]))
+        prompt += f"\n\nThe user's current local time is {geo['local_time']}"
+        if location_str:
+            prompt += f", and they appear to be located in {location_str}."
+        else:
+            prompt += "."
+        prompt += " Use this naturally when it's relevant (greetings, deadlines, scheduling, local context, time-sensitive answers). Don't mention that you're using IP-based geolocation unless the user asks how you know."
+
     if long_memory:
         prompt += f"\n\nWhat you know about this user from past conversations:\n{long_memory}"
     return prompt
@@ -304,7 +369,7 @@ def login(data: LoginRequest):
         raise HTTPException(500, "Server error")
 
 @app.post("/chat")
-def chat(data: ChatRequest):
+def chat(data: ChatRequest, request: Request):
     try:
         user_id = data.user_id
         message = data.message.strip()
@@ -336,9 +401,10 @@ def chat(data: ChatRequest):
         if day_limit is not None and today_count in [4, 7]:
             show_upgrade_nudge = True
 
+        geo           = get_geo_context(request)
         short_memory  = get_short_memory(user_id, limit=mem_limit)
         long_memory   = get_long_memory(user_id)
-        system_prompt = build_system_prompt(tier, long_memory, username)
+        system_prompt = build_system_prompt(tier, long_memory, username, geo)
 
         reply = call_openai(model, system_prompt, message, short_memory)
         if not reply:
@@ -359,6 +425,12 @@ def chat(data: ChatRequest):
             "status": "ok", "reply": reply, "tier": tier, "model": model,
             "today_count": today_count + 1, "day_limit": day_limit,
             "show_upgrade_nudge": show_upgrade_nudge,
+            "location": {
+                "city": geo.get("city", ""),
+                "country": geo.get("country", ""),
+                "timezone": geo.get("timezone", "UTC"),
+                "local_time": geo.get("local_time", ""),
+            },
         }
     except HTTPException: raise
     except Exception as e:
@@ -409,6 +481,16 @@ def get_user(user_id: int):
     except HTTPException: raise
     except Exception:
         raise HTTPException(500, "Failed to fetch user")
+
+
+@app.get("/geo")
+def geo_check(request: Request):
+    """Quick utility endpoint to test/debug geolocation + local time detection."""
+    try:
+        return {"status": "ok", "geo": get_geo_context(request)}
+    except Exception as e:
+        print("GEO CHECK ERROR:", e)
+        raise HTTPException(500, "Failed to detect location")
 
 
 @app.post("/upgrade/init")
