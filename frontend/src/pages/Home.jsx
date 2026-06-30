@@ -936,7 +936,6 @@ Choose Plan
 
 ))
 
-</div>
 
 
 
