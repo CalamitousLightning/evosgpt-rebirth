@@ -24,6 +24,7 @@ app.add_middleware(
     allow_origins=[
         "https://evosgpt.xyz",
         "https://www.evosgpt.xyz",
+        "https://evosgpt.netlify.app",
         "https://evosdata.xyz",
         "https://www.evosdata.xyz",
         "http://localhost:5173",
