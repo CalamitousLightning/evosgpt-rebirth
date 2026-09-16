@@ -6,7 +6,7 @@ from typing import Optional
 from supabase import create_client, Client
 from passlib.context import CryptContext
 from datetime import datetime, timezone
-import os, uuid, hmac, hashlib, requests
+import os, uuid, hmac, hashlib, requests, re
 from dotenv import load_dotenv
 
 try:
@@ -69,7 +69,12 @@ FORMATTING RULES (always follow):
 - Never output a wall of unformatted text.
 - After code blocks or letters, add: "Copy the above and paste directly."
 
-You serve users primarily in Ghana and across Africa. Be smart, direct, and practical."""
+You serve users primarily in Ghana and across Africa. Be smart, direct, and practical.
+
+IMAGE POLICY (strict, always follow):
+- You are a TEXT-ONLY assistant. You cannot generate, create, draw, edit, or produce images, photos, illustrations, diagrams, logos, or any other visual/graphic files in any form.
+- Never output markdown image syntax (e.g. ![alt](url)), image URLs presented as generated images, base64 image data, or any claim that an image was created.
+- If a user asks you to generate/create/draw/design an image, logo, photo, or picture, politely explain that EVOSGPT is text-only and cannot generate images, then offer a helpful text alternative instead (e.g. a detailed written description, ASCII art if appropriate, or a prompt they could use with a dedicated image tool)."""
 
 TIER_PERSONA = {
     "Basic":   "\n\nYou are in Basic mode. Be helpful and concise. For advanced tasks, mention that Pro or Core tier unlocks more power.",
@@ -212,6 +217,24 @@ def get_geo_context(request: Request) -> dict:
             "timezone": "UTC",
             "local_time": datetime.now(timezone.utc).strftime("%A, %d %B %Y, %I:%M %p UTC"),
         }
+
+
+# =========================
+# IMAGE-GENERATION SAFETY NET
+# =========================
+# EVOSGPT is text-only. This strips any markdown image syntax, raw base64
+# image data, or image data-URIs that might slip into a model reply, so no
+# image can ever be rendered or delivered to the client, regardless of what
+# the model outputs.
+_MD_IMAGE_RE   = re.compile(r"!\[[^\]]*\]\([^)]*\)")
+_DATA_IMAGE_RE = re.compile(r"data:image\/[a-zA-Z0-9.+-]+;base64,[A-Za-z0-9+/=]+")
+
+def strip_image_content(text: Optional[str]) -> Optional[str]:
+    if not text:
+        return text
+    cleaned = _MD_IMAGE_RE.sub("[Image generation is not supported by EVOSGPT]", text)
+    cleaned = _DATA_IMAGE_RE.sub("[Image generation is not supported by EVOSGPT]", cleaned)
+    return cleaned
 
 
 def call_openai(model: str, system: str, user_msg: str, history: list = []) -> Optional[str]:
@@ -410,6 +433,7 @@ def chat(data: ChatRequest, request: Request):
         reply = call_openai(model, system_prompt, message, short_memory)
         if not reply:
             raise HTTPException(500, "AI service unavailable. Try again.")
+        reply = strip_image_content(reply)
 
         save_message(user_id, "user", message)
         save_message(user_id, "assistant", reply)

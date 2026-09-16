@@ -52,6 +52,11 @@ function Markdown({ text }) {
             );
             return <CodeBlock value={value} language={language} />;
           },
+          // EVOSGPT is text-only: never render an <img>, even if some markdown
+          // image syntax ends up in a message. Show a plain note instead.
+          img() {
+            return <em style={{ color: "#64748b" }}>[Image generation is not supported by EVOSGPT]</em>;
+          },
         }}
       >
         {text}
