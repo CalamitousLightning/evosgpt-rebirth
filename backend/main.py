@@ -45,6 +45,10 @@ PAYSTACK_SECRET   = os.getenv("PAYSTACK_SECRET_KEY")
 anon_client: Client = create_client(SUPABASE_URL, SUPABASE_ANON_KEY)
 db_client:   Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
+@app.on_event("startup")
+def _startup():
+    ensure_image_bucket()
+
 pwd = CryptContext(schemes=["bcrypt"], deprecated="auto")
 def hash_password(p): return pwd.hash(p)
 def verify_password(p, h): return pwd.verify(p, h)
@@ -56,6 +60,7 @@ TIERS = {
     "Founder": {"model": "gpt-4o",      "memory_limit": 1000, "day_limit": None, "price_ghs": 0,   "icon": "👑"},
 }
 PURCHASABLE_TIERS = {"Pro", "Core"}
+IMAGE_GEN_TIERS = {"Pro", "Core", "Founder"}  # Basic tier cannot generate images
 
 BASE_PROMPT = """You are EVOSGPT — an evolving AI assistant built by EVOS Technologies.
 You adapt, remember, and grow with each user over time.
@@ -71,10 +76,11 @@ FORMATTING RULES (always follow):
 
 You serve users primarily in Ghana and across Africa. Be smart, direct, and practical.
 
-IMAGE POLICY (strict, always follow):
-- You are a TEXT-ONLY assistant. You cannot generate, create, draw, edit, or produce images, photos, illustrations, diagrams, logos, or any other visual/graphic files in any form.
-- Never output markdown image syntax (e.g. ![alt](url)), image URLs presented as generated images, base64 image data, or any claim that an image was created.
-- If a user asks you to generate/create/draw/design an image, logo, photo, or picture, politely explain that EVOSGPT is text-only and cannot generate images, then offer a helpful text alternative instead (e.g. a detailed written description, ASCII art if appropriate, or a prompt they could use with a dedicated image tool)."""
+IMAGE POLICY (always follow):
+- You CAN see and analyze images the user uploads in this chat — describe them, read text in them, answer questions about them, give feedback on them.
+- You CANNOT draw or generate an image yourself as part of a normal reply. Never output markdown image syntax (e.g. ![alt](url)), base64 image data, or claim you created/attached an image inline in your text.
+- EVOSGPT has a separate built-in image-generation tool (the 🎨 button next to the message box) that actually creates images, available on Pro tier and above.
+- If a user asks you to generate/create/draw/design an image, logo, photo, or picture: if they're eligible for it, tell them to tap the 🎨 button and describe what they want there. If they're on Basic tier, tell them image generation requires upgrading to Pro."""
 
 TIER_PERSONA = {
     "Basic":   "\n\nYou are in Basic mode. Be helpful and concise. For advanced tasks, mention that Pro or Core tier unlocks more power.",
@@ -100,6 +106,12 @@ class LoginRequest(BaseModel):
 class ChatRequest(BaseModel):
     user_id: int
     message: str
+    image_base64: Optional[str] = None   # raw base64, no data-URI prefix
+    image_mime: Optional[str] = "image/jpeg"
+
+class ImageGenRequest(BaseModel):
+    user_id: int
+    prompt: str
 
 class UpgradeRequest(BaseModel):
     user_id: int
@@ -220,24 +232,22 @@ def get_geo_context(request: Request) -> dict:
 
 
 # =========================
-# IMAGE-GENERATION SAFETY NET
+# STRAY-IMAGE-SYNTAX SAFETY NET
 # =========================
-# EVOSGPT is text-only. This strips any markdown image syntax, raw base64
-# image data, or image data-URIs that might slip into a model reply, so no
-# image can ever be rendered or delivered to the client, regardless of what
-# the model outputs.
-_MD_IMAGE_RE   = re.compile(r"!\[[^\]]*\]\([^)]*\)")
-_DATA_IMAGE_RE = re.compile(r"data:image\/[a-zA-Z0-9.+-]+;base64,[A-Za-z0-9+/=]+")
+# The model is told never to fabricate inline image markdown in a normal
+# reply (real generated images come back from /image/generate as their own
+# field, not inline markdown). This just catches any stray markdown image
+# syntax that slips into a *text* reply so we never show a broken/fake image.
+_MD_IMAGE_RE = re.compile(r"!\[[^\]]*\]\([^)]*\)")
 
-def strip_image_content(text: Optional[str]) -> Optional[str]:
+def strip_stray_image_markdown(text: Optional[str]) -> Optional[str]:
     if not text:
         return text
-    cleaned = _MD_IMAGE_RE.sub("[Image generation is not supported by EVOSGPT]", text)
-    cleaned = _DATA_IMAGE_RE.sub("[Image generation is not supported by EVOSGPT]", cleaned)
-    return cleaned
+    return _MD_IMAGE_RE.sub("", text).strip()
 
 
-def call_openai(model: str, system: str, user_msg: str, history: list = []) -> Optional[str]:
+def call_openai(model: str, system: str, user_msg, history: list = []) -> Optional[str]:
+    """user_msg can be a plain string, or a list of content blocks (for vision)."""
     try:
         messages = [{"role": "system", "content": system}]
         for h in history:
@@ -254,9 +264,53 @@ def call_openai(model: str, system: str, user_msg: str, history: list = []) -> O
         print("OPENAI ERROR:", e)
         return None
 
+
+def generate_image(prompt: str, size: str = "1024x1024") -> Optional[str]:
+    """Calls OpenAI's image generation API and returns base64 PNG data (no data-URI prefix)."""
+    try:
+        res = requests.post(
+            "https://api.openai.com/v1/images/generations",
+            headers={"Authorization": f"Bearer {OPENAI_API_KEY}", "Content-Type": "application/json"},
+            json={"model": "gpt-image-1", "prompt": prompt, "size": size, "n": 1},
+            timeout=90
+        )
+        data = res.json()
+        return data["data"][0]["b64_json"]
+    except Exception as e:
+        print("IMAGE GEN ERROR:", e)
+        return None
+
+
+IMAGE_BUCKET = "evosgpt-images"
+
+def ensure_image_bucket():
+    try:
+        buckets = db_client.storage.list_buckets()
+        if not any(b.name == IMAGE_BUCKET for b in buckets):
+            db_client.storage.create_bucket(IMAGE_BUCKET, options={"public": True})
+    except Exception as e:
+        print("BUCKET SETUP WARNING:", e)
+
+def upload_generated_image(user_id: int, b64_png: str) -> Optional[str]:
+    try:
+        import base64 as _b64
+        raw = _b64.b64decode(b64_png)
+        path = f"{user_id}/{uuid.uuid4().hex}.png"
+        db_client.storage.from_(IMAGE_BUCKET).upload(
+            path, raw, file_options={"content-type": "image/png"}
+        )
+        return db_client.storage.from_(IMAGE_BUCKET).get_public_url(path)
+    except Exception as e:
+        print("IMAGE UPLOAD ERROR:", e)
+        return None
+
 def build_system_prompt(tier: str, long_memory: Optional[str], username: str, geo: Optional[dict] = None) -> str:
     prompt = BASE_PROMPT + TIER_PERSONA.get(tier, TIER_PERSONA["Basic"]) + EVOS_NUDGE
     prompt += f"\n\nThe user's name is {username}."
+    if tier in IMAGE_GEN_TIERS:
+        prompt += " This user's tier includes access to the 🎨 image-generation button."
+    else:
+        prompt += " This user is on Basic tier: image generation is NOT available to them until they upgrade to Pro."
 
     if geo and geo.get("local_time"):
         location_str = ", ".join(filter(None, [geo.get("city"), geo.get("country")]))
@@ -430,12 +484,23 @@ def chat(data: ChatRequest, request: Request):
         long_memory   = get_long_memory(user_id)
         system_prompt = build_system_prompt(tier, long_memory, username, geo)
 
-        reply = call_openai(model, system_prompt, message, short_memory)
+        if data.image_base64:
+            user_content = [
+                {"type": "text", "text": message or "What's in this image?"},
+                {"type": "image_url", "image_url": {"url": f"data:{data.image_mime or 'image/jpeg'};base64,{data.image_base64}"}},
+            ]
+            # Vision models need gpt-4o (or mini); both tiers already map to a vision-capable model.
+            reply = call_openai(model, system_prompt, user_content, short_memory)
+        else:
+            reply = call_openai(model, system_prompt, message, short_memory)
+
         if not reply:
             raise HTTPException(500, "AI service unavailable. Try again.")
-        reply = strip_image_content(reply)
+        reply = strip_stray_image_markdown(reply)
 
-        save_message(user_id, "user", message)
+        # Store a text-only record in memory (images aren't persisted into long-term history).
+        stored_user_msg = message if not data.image_base64 else f"[Image uploaded] {message}".strip()
+        save_message(user_id, "user", stored_user_msg)
         save_message(user_id, "assistant", reply)
         trim_memory(user_id, mem_limit)
         increment_today_count(user_id)
@@ -461,6 +526,61 @@ def chat(data: ChatRequest, request: Request):
     except Exception as e:
         print("CHAT ERROR:", e)
         raise HTTPException(500, "Chat failed")
+
+
+@app.post("/image/generate")
+def image_generate(data: ImageGenRequest, request: Request):
+    try:
+        user_id = data.user_id
+        prompt  = data.prompt.strip()
+        if not prompt:
+            raise HTTPException(400, "Prompt cannot be empty")
+
+        user = get_user_by_id(user_id)
+        if not user:
+            raise HTTPException(404, "User not found")
+
+        tier = user.get("evosgpt_tier", "Basic")
+        if tier not in IMAGE_GEN_TIERS:
+            return {
+                "status": "tier_restricted",
+                "reply": "Image generation is a Pro-tier feature. Upgrade to unlock it!",
+                "tier": tier,
+            }
+
+        tier_cfg  = TIERS.get(tier, TIERS["Basic"])
+        day_limit = tier_cfg["day_limit"]
+        today_count = get_today_count(user_id)
+        if day_limit is not None and today_count >= day_limit:
+            return {
+                "status": "limit_reached",
+                "reply": f"You've used all {day_limit} free chats for today. Come back tomorrow or upgrade for unlimited chats!",
+                "tier": tier, "limit_reached": True,
+                "today_count": today_count, "day_limit": day_limit,
+            }
+
+        b64_png = generate_image(prompt)
+        if not b64_png:
+            raise HTTPException(500, "Image generation failed. Try again.")
+
+        image_url = upload_generated_image(user_id, b64_png)
+        if not image_url:
+            raise HTTPException(500, "Image was generated but could not be saved. Try again.")
+
+        reply = f"![Generated image]({image_url})\n\n*Prompt: {prompt}*"
+
+        save_message(user_id, "user", f"[Image generation request] {prompt}")
+        save_message(user_id, "assistant", reply)
+        increment_today_count(user_id)
+
+        return {
+            "status": "ok", "reply": reply, "image_url": image_url,
+            "tier": tier, "today_count": today_count + 1, "day_limit": day_limit,
+        }
+    except HTTPException: raise
+    except Exception as e:
+        print("IMAGE ENDPOINT ERROR:", e)
+        raise HTTPException(500, "Image generation failed")
 
 
 @app.get("/memory/{user_id}")

@@ -131,6 +131,17 @@ The system prompt instructs the AI to always format:
 
 Basic tier users get a friendly upgrade nudge popup after their 5th and 8th chat of the day, and a clear limit-reached message after their 10th — both also mention EvosData for buying data bundles.
 
+## 🖼️ Image Generation & Vision
+
+- **Vision (all tiers):** tap the 📎 button to attach an image, then ask a question about it. Sent to the model as a multimodal message (`/chat` with `image_base64`) — nothing is persisted to long-term memory except the text of the exchange.
+- **Generation (Pro tier and above):** tap the 🎨 button, describe the image, hit send. Calls `POST /image/generate`, which:
+  1. Checks the user's tier is in `IMAGE_GEN_TIERS` (`Pro`, `Core`, `Founder`) — Basic users get an upgrade prompt instead.
+  2. Generates the image via OpenAI's `gpt-image-1` model.
+  3. Uploads the PNG to a public Supabase Storage bucket (`evosgpt-images`, auto-created on backend startup) and returns its public URL.
+  4. Saves the exchange to `evosgpt_memory` as a markdown image message and counts against the same daily chat limit as text messages.
+
+No new environment variables are needed — image generation reuses `OPENAI_API_KEY`, and the storage bucket reuses `SUPABASE_KEY` (service-role key, needed for bucket creation and uploads).
+
 ## 🎟️ Coupons
 
 Seeded coupons (edit/remove in `schema.sql`):

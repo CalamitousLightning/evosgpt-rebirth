@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { sendMessage, getMemory, clearMemory, getUser } from "../api";
+import { sendMessage, generateImage, getMemory, clearMemory, getUser } from "../api";
 
 const TIER_BADGE = {
   Basic:   { icon: "🧊", color: "#64748b" },
@@ -52,10 +52,15 @@ function Markdown({ text }) {
             );
             return <CodeBlock value={value} language={language} />;
           },
-          // EVOSGPT is text-only: never render an <img>, even if some markdown
-          // image syntax ends up in a message. Show a plain note instead.
-          img() {
-            return <em style={{ color: "#64748b" }}>[Image generation is not supported by EVOSGPT]</em>;
+          img({ src, alt }) {
+            return (
+              <img
+                src={src}
+                alt={alt || "Generated image"}
+                style={{ maxWidth: "100%", borderRadius: 12, margin: "6px 0", display: "block" }}
+                loading="lazy"
+              />
+            );
           },
         }}
       >
@@ -97,9 +102,16 @@ export default function Chat({ setPage, user, setUser }) {
   const [menuOpen, setMenuOpen]       = useState(false);
   const [showScrollBtn, setShowScrollBtn] = useState(false);
 
+  // Image generation + vision upload
+  const [imageMode, setImageMode]     = useState(false); // 🎨 generate-image mode
+  const [pendingImage, setPendingImage] = useState(null); // { base64, mime, previewUrl }
+
   const bottomRef = useRef(null);
   const bodyRef   = useRef(null);
   const taRef     = useRef(null);
+  const fileRef   = useRef(null);
+
+  const canGenerateImages = tier !== "Basic";
 
   useEffect(() => {
     if (!user) { setPage("login"); return; }
@@ -140,6 +152,31 @@ export default function Chat({ setPage, user, setUser }) {
     } finally { setLoadHist(false); }
   };
 
+  const handleFileSelect = (e) => {
+    const file = e.target.files?.[0];
+    e.target.value = ""; // allow re-selecting the same file later
+    if (!file) return;
+    if (!file.type.startsWith("image/")) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      const dataUrl = reader.result; // "data:image/jpeg;base64,...."
+      const [meta, base64] = dataUrl.split(",");
+      const mime = meta.match(/data:(.*);base64/)?.[1] || "image/jpeg";
+      setImageMode(false);
+      setPendingImage({ base64, mime, previewUrl: dataUrl });
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const toggleImageMode = () => {
+    if (!canGenerateImages) {
+      setNudge(true);
+      return;
+    }
+    setPendingImage(null);
+    setImageMode(v => !v);
+  };
+
   const send = async () => {
     const text = input.trim();
     if (!text || sending) return;
@@ -148,12 +185,48 @@ export default function Chat({ setPage, user, setUser }) {
     if (taRef.current) {
       taRef.current.style.height = "auto";
     }
-    setMessages(m => [...m, { role: "user", content: text }]);
     setSending(true);
     setNudge(false);
 
+    // ---- Mode 1: generate an image from the prompt ----
+    if (imageMode) {
+      setMessages(m => [...m, { role: "user", content: `🎨 ${text}` }]);
+      setImageMode(false);
+      try {
+        const { data } = await generateImage({ user_id: user.id, prompt: text });
+
+        if (data.status === "tier_restricted") {
+          setMessages(m => [...m, { role: "assistant", content: data.reply }]);
+          setNudge(true);
+          return;
+        }
+        if (data.status === "limit_reached") {
+          setLimitHit(true);
+          setMessages(m => [...m, { role: "assistant", content: data.reply }]);
+          return;
+        }
+
+        setMessages(m => [...m, { role: "assistant", content: data.reply }]);
+        setTier(data.tier);
+        setToday(data.today_count);
+        setDayLimit(data.day_limit);
+      } catch (e) {
+        setMessages(m => [...m, { role: "assistant", content: "⚠️ Couldn't generate that image. Please try again." }]);
+      } finally { setSending(false); }
+      return;
+    }
+
+    // ---- Mode 2: plain text, optionally with an attached image (vision) ----
+    const attached = pendingImage;
+    setPendingImage(null);
+    setMessages(m => [...m, { role: "user", content: text, image: attached?.previewUrl }]);
+
     try {
-      const { data } = await sendMessage({ user_id: user.id, message: text });
+      const { data } = await sendMessage({
+        user_id: user.id,
+        message: text,
+        ...(attached ? { image_base64: attached.base64, image_mime: attached.mime } : {}),
+      });
 
       if (data.limit_reached) {
         setLimitHit(true);
@@ -231,7 +304,12 @@ export default function Chat({ setPage, user, setUser }) {
           messages.map((m, i) => (
             <div key={i} style={{ ...S.msgRow, justifyContent: m.role === "user" ? "flex-end" : "flex-start" }}>
               {m.role === "user" ? (
-                <div style={{ ...S.bubble, ...S.userBubble }}>{m.content}</div>
+                <div style={{ ...S.bubble, ...S.userBubble }}>
+                  {m.image && (
+                    <img src={m.image} alt="Uploaded" style={{ maxWidth: "100%", borderRadius: 10, marginBottom: 8, display: "block" }} />
+                  )}
+                  {m.content}
+                </div>
               ) : (
                 <BotBubble content={m.content} />
               )}
@@ -303,12 +381,52 @@ export default function Chat({ setPage, user, setUser }) {
         </div>
       )}
 
+      {/* PENDING IMAGE PREVIEW (vision upload) */}
+      {pendingImage && (
+        <div style={S.pendingImageBar}>
+          <img src={pendingImage.previewUrl} alt="To send" style={S.pendingImageThumb} />
+          <span style={{ fontSize: 12, color: "#94a3b8", flex: 1 }}>Image attached — ask a question about it</span>
+          <button style={S.pendingImageRemove} onClick={() => setPendingImage(null)}>✕</button>
+        </div>
+      )}
+
+      {/* IMAGE-GENERATION MODE BANNER */}
+      {imageMode && (
+        <div style={S.imageModeBar}>
+          <span style={{ fontSize: 12, color: "#a78bfa", fontWeight: 700 }}>🎨 Describe the image you want EVOSGPT to generate</span>
+          <button style={S.pendingImageRemove} onClick={() => setImageMode(false)}>✕</button>
+        </div>
+      )}
+
       {/* INPUT */}
       <div style={S.inputBar}>
+        <input
+          type="file"
+          accept="image/*"
+          ref={fileRef}
+          style={{ display: "none" }}
+          onChange={handleFileSelect}
+        />
+        <button
+          style={{ ...S.attachBtn, opacity: limitHit || imageMode ? 0.4 : 1 }}
+          title="Attach an image to ask about"
+          disabled={limitHit || imageMode}
+          onClick={() => fileRef.current?.click()}
+        >
+          📎
+        </button>
+        <button
+          style={{ ...S.attachBtn, opacity: limitHit ? 0.4 : 1, color: imageMode ? "#a78bfa" : "#94a3b8", borderColor: imageMode ? "rgba(167,139,250,0.5)" : "rgba(255,255,255,0.1)" }}
+          title={canGenerateImages ? "Generate an image" : "Upgrade to Pro to generate images"}
+          disabled={limitHit}
+          onClick={toggleImageMode}
+        >
+          🎨
+        </button>
         <textarea
           ref={taRef}
           style={{ ...S.textarea, overflowY: "hidden" }}
-          placeholder="Message EVOSGPT..."
+          placeholder={imageMode ? "Describe the image to generate..." : "Message EVOSGPT..."}
           value={input}
           disabled={limitHit}
           onChange={handleTextareaChange}
@@ -354,7 +472,13 @@ const S = {
   limitBox:  { maxWidth: 760, margin: "0 auto 10px", width: "calc(100% - 32px)", background: "rgba(239,68,68,0.08)", border: "1px solid rgba(239,68,68,0.25)", borderRadius: 16, padding: "16px 18px" },
   nudgeBtn:  { padding: "8px 16px", borderRadius: 10, border: "none", background: "#38bdf8", color: "#000", fontWeight: 800, fontSize: 13, cursor: "pointer" },
   nudgeGhost:{ padding: "8px 14px", borderRadius: 10, border: "1px solid rgba(255,255,255,0.15)", background: "transparent", color: "#94a3b8", fontWeight: 700, fontSize: 13, cursor: "pointer" },
-  inputBar:  { display: "flex", gap: 10, padding: "14px 16px 20px", borderTop: "1px solid rgba(255,255,255,0.06)", maxWidth: 760, margin: "0 auto", width: "100%", boxSizing: "border-box", alignItems: "flex-end" },
+  inputBar:  { display: "flex", gap: 8, padding: "14px 16px 20px", borderTop: "1px solid rgba(255,255,255,0.06)", maxWidth: 760, margin: "0 auto", width: "100%", boxSizing: "border-box", alignItems: "flex-end" },
   textarea:  { flex: 1, resize: "none", padding: "13px 16px", borderRadius: 16, border: "1px solid rgba(255,255,255,0.1)", background: "rgba(255,255,255,0.04)", color: "#f1f5f9", fontSize: 14.5, outline: "none", minHeight: 50, maxHeight: 160, fontFamily: "inherit", lineHeight: 1.55, transition: "height 0.1s ease" },
   sendBtn:   { width: 46, height: 46, borderRadius: "50%", border: "none", background: "linear-gradient(135deg,#38bdf8,#0ea5e9)", color: "#000", fontSize: 18, cursor: "pointer", flexShrink: 0 },
+  attachBtn: { width: 46, height: 46, borderRadius: 14, border: "1px solid rgba(255,255,255,0.1)", background: "rgba(255,255,255,0.04)", fontSize: 18, cursor: "pointer", flexShrink: 0 },
+
+  pendingImageBar: { display: "flex", alignItems: "center", gap: 10, maxWidth: 760, margin: "0 auto", width: "calc(100% - 32px)", background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 14, padding: "8px 10px", marginBottom: 8 },
+  pendingImageThumb: { width: 40, height: 40, borderRadius: 8, objectFit: "cover" },
+  pendingImageRemove:{ background: "none", border: "none", color: "#94a3b8", fontSize: 14, fontWeight: 800, cursor: "pointer", padding: "2px 6px" },
+  imageModeBar: { display: "flex", alignItems: "center", justifyContent: "space-between", maxWidth: 760, margin: "0 auto", width: "calc(100% - 32px)", background: "rgba(167,139,250,0.08)", border: "1px solid rgba(167,139,250,0.25)", borderRadius: 14, padding: "8px 12px", marginBottom: 8 },
 };

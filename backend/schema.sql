@@ -58,3 +58,14 @@ INSERT INTO evosgpt_coupons (code, tier) VALUES
     ('EVOSCORE2026', 'Core'),
     ('EVOSFOUND',    'Founder')
 ON CONFLICT (code) DO NOTHING;
+
+-- ============================================================
+-- IMAGE GENERATION — Supabase Storage
+-- ============================================================
+-- The backend auto-creates a public bucket called "evosgpt-images" on
+-- startup (see ensure_image_bucket() in main.py), so you normally don't
+-- need to do anything here. If your service-role key doesn't have
+-- permission to create buckets, create it manually instead:
+--   Supabase Dashboard -> Storage -> New bucket -> name: evosgpt-images
+--   -> toggle "Public bucket" ON -> Save.
+-- No SQL is required for this — Storage buckets aren't SQL tables.
