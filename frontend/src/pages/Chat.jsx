@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { sendMessage, generateImage, getMemory, clearMemory, getUser } from "../api";
+import { sendMessage, generateImage, editImage, generateDocument, getMemory, clearMemory, getUser } from "../api";
 
 const TIER_BADGE = {
   Basic:   { icon: "🧊", color: "#64748b" },
@@ -105,6 +105,12 @@ export default function Chat({ setPage, user, setUser }) {
   // Image generation + vision upload
   const [imageMode, setImageMode]     = useState(false); // 🎨 generate-image mode
   const [pendingImage, setPendingImage] = useState(null); // { base64, mime, previewUrl }
+  const [editMode, setEditMode]       = useState(false); // true = "Edit this image" instead of "Ask about it"
+
+  // Document generation (PDF / Word)
+  const [docMode, setDocMode]         = useState(false); // 📄 generate-document mode
+  const [docFormat, setDocFormat]     = useState("pdf");  // "pdf" | "docx"
+  const [docPaperSize, setDocPaperSize] = useState("A4"); // "A4" | "A5" | "LETTER" | "LEGAL"
 
   const bottomRef = useRef(null);
   const bodyRef   = useRef(null);
@@ -163,6 +169,8 @@ export default function Chat({ setPage, user, setUser }) {
       const [meta, base64] = dataUrl.split(",");
       const mime = meta.match(/data:(.*);base64/)?.[1] || "image/jpeg";
       setImageMode(false);
+      setDocMode(false);
+      setEditMode(false);
       setPendingImage({ base64, mime, previewUrl: dataUrl });
     };
     reader.readAsDataURL(file);
@@ -174,7 +182,18 @@ export default function Chat({ setPage, user, setUser }) {
       return;
     }
     setPendingImage(null);
+    setDocMode(false);
     setImageMode(v => !v);
+  };
+
+  const toggleDocMode = () => {
+    if (!canGenerateImages) {
+      setNudge(true);
+      return;
+    }
+    setPendingImage(null);
+    setImageMode(false);
+    setDocMode(v => !v);
   };
 
   const send = async () => {
@@ -187,6 +206,43 @@ export default function Chat({ setPage, user, setUser }) {
     }
     setSending(true);
     setNudge(false);
+
+    // ---- Mode 0: generate a PDF/Word document from the prompt ----
+    if (docMode) {
+      setMessages(m => [...m, { role: "user", content: `📄 ${text}` }]);
+      setDocMode(false);
+      try {
+        const { data } = await generateDocument({
+          user_id: user.id,
+          prompt: text,
+          doc_format: docFormat,
+          paper_size: docPaperSize,
+        });
+
+        if (data.status === "tier_restricted") {
+          setMessages(m => [...m, { role: "assistant", content: data.reply }]);
+          setNudge(true);
+          return;
+        }
+        if (data.status === "letterhead_restricted") {
+          setMessages(m => [...m, { role: "assistant", content: data.reply }]);
+          return;
+        }
+        if (data.status === "limit_reached") {
+          setLimitHit(true);
+          setMessages(m => [...m, { role: "assistant", content: data.reply }]);
+          return;
+        }
+
+        setMessages(m => [...m, { role: "assistant", content: data.reply }]);
+        setTier(data.tier);
+        setToday(data.today_count);
+        setDayLimit(data.day_limit);
+      } catch (e) {
+        setMessages(m => [...m, { role: "assistant", content: "⚠️ Couldn't generate that document. Please try again." }]);
+      } finally { setSending(false); }
+      return;
+    }
 
     // ---- Mode 1: generate an image from the prompt ----
     if (imageMode) {
@@ -216,9 +272,50 @@ export default function Chat({ setPage, user, setUser }) {
       return;
     }
 
-    // ---- Mode 2: plain text, optionally with an attached image (vision) ----
+    // ---- Mode 2a: edit the attached image ----
+    if (pendingImage && editMode) {
+      const attached = pendingImage;
+      setPendingImage(null);
+      setEditMode(false);
+      setMessages(m => [...m, { role: "user", content: `✏️ ${text}`, image: attached.previewUrl }]);
+
+      try {
+        const { data } = await editImage({
+          user_id: user.id,
+          prompt: text,
+          image_base64: attached.base64,
+          image_mime: attached.mime,
+        });
+
+        if (data.status === "tier_restricted") {
+          setMessages(m => [...m, { role: "assistant", content: data.reply }]);
+          setNudge(true);
+          return;
+        }
+        if (data.status === "letterhead_restricted") {
+          setMessages(m => [...m, { role: "assistant", content: data.reply }]);
+          return;
+        }
+        if (data.status === "limit_reached") {
+          setLimitHit(true);
+          setMessages(m => [...m, { role: "assistant", content: data.reply }]);
+          return;
+        }
+
+        setMessages(m => [...m, { role: "assistant", content: data.reply }]);
+        setTier(data.tier);
+        setToday(data.today_count);
+        setDayLimit(data.day_limit);
+      } catch (e) {
+        setMessages(m => [...m, { role: "assistant", content: "⚠️ Couldn't edit that image. Please try again." }]);
+      } finally { setSending(false); }
+      return;
+    }
+
+    // ---- Mode 2b: plain text, optionally with an attached image (vision) ----
     const attached = pendingImage;
     setPendingImage(null);
+    setEditMode(false);
     setMessages(m => [...m, { role: "user", content: text, image: attached?.previewUrl }]);
 
     try {
@@ -381,12 +478,45 @@ export default function Chat({ setPage, user, setUser }) {
         </div>
       )}
 
-      {/* PENDING IMAGE PREVIEW (vision upload) */}
+      {/* PENDING IMAGE PREVIEW (vision upload / edit) */}
       {pendingImage && (
         <div style={S.pendingImageBar}>
           <img src={pendingImage.previewUrl} alt="To send" style={S.pendingImageThumb} />
-          <span style={{ fontSize: 12, color: "#94a3b8", flex: 1 }}>Image attached — ask a question about it</span>
-          <button style={S.pendingImageRemove} onClick={() => setPendingImage(null)}>✕</button>
+          <span style={{ fontSize: 12, color: "#94a3b8", flex: 1 }}>
+            {editMode ? "Describe how to edit this image" : "Ask a question, or switch to Edit"}
+          </span>
+          <button
+            style={{ ...S.modeToggleBtn, ...(editMode ? {} : S.modeToggleBtnActive) }}
+            onClick={() => setEditMode(false)}
+          >
+            💬 Ask
+          </button>
+          <button
+            style={{ ...S.modeToggleBtn, ...(editMode ? S.modeToggleBtnActive : {}) }}
+            title={canGenerateImages ? "Edit this image" : "Upgrade to Pro to edit images"}
+            onClick={() => { if (!canGenerateImages) { setNudge(true); return; } setEditMode(true); }}
+          >
+            ✏️ Edit
+          </button>
+          <button style={S.pendingImageRemove} onClick={() => { setPendingImage(null); setEditMode(false); }}>✕</button>
+        </div>
+      )}
+
+      {/* DOCUMENT-GENERATION MODE BANNER */}
+      {docMode && (
+        <div style={S.imageModeBar}>
+          <span style={{ fontSize: 12, color: "#4ade80", fontWeight: 700, flex: 1 }}>📄 Describe the PDF/Word document to generate</span>
+          <select style={S.docSelect} value={docFormat} onChange={e => setDocFormat(e.target.value)}>
+            <option value="pdf">PDF</option>
+            <option value="docx">Word (.docx)</option>
+          </select>
+          <select style={S.docSelect} value={docPaperSize} onChange={e => setDocPaperSize(e.target.value)}>
+            <option value="A4">A4</option>
+            <option value="LETTER">Letter</option>
+            <option value="LEGAL">Legal</option>
+            <option value="A5">A5</option>
+          </select>
+          <button style={S.pendingImageRemove} onClick={() => setDocMode(false)}>✕</button>
         </div>
       )}
 
@@ -423,10 +553,18 @@ export default function Chat({ setPage, user, setUser }) {
         >
           🎨
         </button>
+        <button
+          style={{ ...S.attachBtn, opacity: limitHit ? 0.4 : 1, color: docMode ? "#4ade80" : "#94a3b8", borderColor: docMode ? "rgba(74,222,128,0.5)" : "rgba(255,255,255,0.1)" }}
+          title={canGenerateImages ? "Generate a PDF/Word document" : "Upgrade to Pro to generate documents"}
+          disabled={limitHit}
+          onClick={toggleDocMode}
+        >
+          📄
+        </button>
         <textarea
           ref={taRef}
           style={{ ...S.textarea, overflowY: "hidden" }}
-          placeholder={imageMode ? "Describe the image to generate..." : "Message EVOSGPT..."}
+          placeholder={docMode ? "Describe the document to generate..." : imageMode ? "Describe the image to generate..." : (pendingImage && editMode) ? "Describe the edit you want..." : "Message EVOSGPT..."}
           value={input}
           disabled={limitHit}
           onChange={handleTextareaChange}
@@ -480,5 +618,8 @@ const S = {
   pendingImageBar: { display: "flex", alignItems: "center", gap: 10, maxWidth: 760, margin: "0 auto", width: "calc(100% - 32px)", background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 14, padding: "8px 10px", marginBottom: 8 },
   pendingImageThumb: { width: 40, height: 40, borderRadius: 8, objectFit: "cover" },
   pendingImageRemove:{ background: "none", border: "none", color: "#94a3b8", fontSize: 14, fontWeight: 800, cursor: "pointer", padding: "2px 6px" },
+  modeToggleBtn:      { fontSize: 11, fontWeight: 700, padding: "5px 10px", borderRadius: 8, border: "1px solid rgba(255,255,255,0.12)", background: "transparent", color: "#94a3b8", cursor: "pointer", whiteSpace: "nowrap" },
+  modeToggleBtnActive:{ background: "rgba(167,139,250,0.18)", borderColor: "rgba(167,139,250,0.5)", color: "#a78bfa" },
   imageModeBar: { display: "flex", alignItems: "center", justifyContent: "space-between", maxWidth: 760, margin: "0 auto", width: "calc(100% - 32px)", background: "rgba(167,139,250,0.08)", border: "1px solid rgba(167,139,250,0.25)", borderRadius: 14, padding: "8px 12px", marginBottom: 8 },
+  docSelect: { fontSize: 11, fontWeight: 700, padding: "5px 6px", borderRadius: 8, border: "1px solid rgba(255,255,255,0.15)", background: "#0f172a", color: "#e2e8f0", cursor: "pointer" },
 };

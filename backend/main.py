@@ -8,6 +8,18 @@ from passlib.context import CryptContext
 from datetime import datetime, timezone
 import os, uuid, hmac, hashlib, requests, re
 from dotenv import load_dotenv
+from io import BytesIO
+
+from reportlab.lib.pagesizes import A4, LETTER, LEGAL, A5
+from reportlab.lib.units import cm
+from reportlab.lib.enums import TA_JUSTIFY, TA_CENTER, TA_LEFT
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, ListFlowable, ListItem, Table, TableStyle
+from reportlab.lib import colors
+
+from docx import Document as DocxDocument
+from docx.shared import Cm, Pt
+from docx.enum.text import WD_ALIGN_PARAGRAPH
 
 try:
     from zoneinfo import ZoneInfo
@@ -48,6 +60,7 @@ db_client:   Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 @app.on_event("startup")
 def _startup():
     ensure_image_bucket()
+    ensure_document_bucket()
 
 pwd = CryptContext(schemes=["bcrypt"], deprecated="auto")
 def hash_password(p): return pwd.hash(p)
@@ -60,7 +73,18 @@ TIERS = {
     "Founder": {"model": "gpt-4o",      "memory_limit": 1000, "day_limit": None, "price_ghs": 0,   "icon": "👑"},
 }
 PURCHASABLE_TIERS = {"Pro", "Core"}
-IMAGE_GEN_TIERS = {"Pro", "Core", "Founder"}  # Basic tier cannot generate images
+IMAGE_GEN_TIERS = {"Pro", "Core", "Founder"}  # Basic tier cannot generate or edit images
+DOCUMENT_GEN_TIERS = {"Pro", "Core", "Founder"}  # Basic tier cannot generate PDF/Word documents
+LETTERHEAD_ALLOWED_TIER = "Founder"  # only Founder tier may create/edit institutional letterheads
+
+# Paper sizes: reportlab pagesize (points) for PDF, and (width_cm, height_cm) for docx.
+PAPER_SIZES = {
+    "A4":     {"pdf": A4,     "docx_cm": (21.0, 29.7)},
+    "A5":     {"pdf": A5,     "docx_cm": (14.8, 21.0)},
+    "LETTER": {"pdf": LETTER, "docx_cm": (21.59, 27.94)},
+    "LEGAL":  {"pdf": LEGAL,  "docx_cm": (21.59, 35.56)},
+}
+DEFAULT_PAPER_SIZE = "A4"
 
 BASE_PROMPT = """You are EVOSGPT — an evolving AI assistant built by EVOS Technologies.
 You adapt, remember, and grow with each user over time.
@@ -78,9 +102,15 @@ You serve users primarily in Ghana and across Africa. Be smart, direct, and prac
 
 IMAGE POLICY (always follow):
 - You CAN see and analyze images the user uploads in this chat — describe them, read text in them, answer questions about them, give feedback on them.
-- You CANNOT draw or generate an image yourself as part of a normal reply. Never output markdown image syntax (e.g. ![alt](url)), base64 image data, or claim you created/attached an image inline in your text.
-- EVOSGPT has a separate built-in image-generation tool (the 🎨 button next to the message box) that actually creates images, available on Pro tier and above.
-- If a user asks you to generate/create/draw/design an image, logo, photo, or picture: if they're eligible for it, tell them to tap the 🎨 button and describe what they want there. If they're on Basic tier, tell them image generation requires upgrading to Pro."""
+- You CANNOT draw, generate, or edit an image yourself as part of a normal reply. Never output markdown image syntax (e.g. ![alt](url)), base64 image data, or claim you created/attached/edited an image inline in your text.
+- EVOSGPT has a separate built-in image tool (the 🎨 button to generate, and an "Edit" option on an attached image) that actually creates/edits images, available on Pro tier and above.
+- If a user asks you to generate/create/draw/design/edit an image, logo, photo, letterhead, or picture: if they're eligible for it, tell them to use the 🎨 button (to generate) or attach the image and pick "Edit" (to edit). If they're on Basic tier, tell them this requires upgrading to Pro.
+- LETTERHEAD POLICY: creating or editing an official letterhead / letterheaded document / branded institutional document (for a company, school, bank, government office, church, NGO, etc.) is restricted to Founder tier only, to prevent impersonation or document fraud. This restriction does NOT apply to a user editing their own personal photo (brightness, color, cropping, background, retouching, restoration, etc.) — that is allowed at whatever tier already has image-edit access. If a non-Founder user asks for an institutional letterhead, explain this policy plainly rather than attempting it.
+
+DOCUMENT POLICY (always follow):
+- EVOSGPT has a separate built-in document tool (the 📄 button next to the message box) that generates a real downloadable PDF or Word (.docx) file, laid out on a proper page (A4 by default, or Letter/Legal/A5), available on Pro tier and above.
+- You CANNOT produce a real PDF/Word file yourself inline in a normal chat reply — never claim you've attached or generated a downloadable document in plain text. If a user wants a CV, report, letter, contract, invoice, or other document as an actual file, tell them to use the 📄 button. If they just want the wording/content to copy-paste, write it directly in chat as usual.
+- The same LETTERHEAD POLICY above applies to the 📄 tool: institutional letterheads/branded official documents are Founder-tier only; personal documents (CV, personal letter, notes, a report the user is writing themselves) are unaffected."""
 
 TIER_PERSONA = {
     "Basic":   "\n\nYou are in Basic mode. Be helpful and concise. For advanced tasks, mention that Pro or Core tier unlocks more power.",
@@ -112,6 +142,19 @@ class ChatRequest(BaseModel):
 class ImageGenRequest(BaseModel):
     user_id: int
     prompt: str
+
+class ImageEditRequest(BaseModel):
+    user_id: int
+    prompt: str
+    image_base64: str            # raw base64, no data-URI prefix
+    image_mime: Optional[str] = "image/png"
+
+class DocumentGenRequest(BaseModel):
+    user_id: int
+    prompt: str
+    doc_format: str = "pdf"           # "pdf" or "docx"
+    paper_size: str = DEFAULT_PAPER_SIZE   # "A4" (default), "A5", "LETTER", "LEGAL"
+    title: Optional[str] = None
 
 class UpgradeRequest(BaseModel):
     user_id: int
@@ -281,6 +324,56 @@ def generate_image(prompt: str, size: str = "1024x1024") -> Optional[str]:
         return None
 
 
+def edit_image(prompt: str, b64_image: str, mime: str = "image/png", size: str = "1024x1024") -> Optional[str]:
+    """Calls OpenAI's image EDIT API (gpt-image-1) with the user's uploaded
+    image + an edit instruction. Returns base64 PNG data (no data-URI prefix)."""
+    try:
+        import base64 as _b64
+        raw = _b64.b64decode(b64_image)
+        ext = "png" if "png" in (mime or "") else ("webp" if "webp" in (mime or "") else "jpg")
+        res = requests.post(
+            "https://api.openai.com/v1/images/edits",
+            headers={"Authorization": f"Bearer {OPENAI_API_KEY}"},
+            files={"image": (f"upload.{ext}", raw, mime or "image/png")},
+            data={"model": "gpt-image-1", "prompt": prompt, "size": size, "n": "1"},
+            timeout=90
+        )
+        data = res.json()
+        return data["data"][0]["b64_json"]
+    except Exception as e:
+        print("IMAGE EDIT ERROR:", e)
+        return None
+
+
+_LETTERHEAD_CLASSIFIER_SYSTEM = """You are a strict content classifier for an AI image-editing tool.
+Decide whether the user's edit request is asking to CREATE or EDIT an official
+letterhead, letterheaded document, branded institutional document, certificate,
+ID card, official seal/stamp, or any document/image meant to look like it was
+issued by or represents a company, government office, bank, school, church,
+NGO, or other institution/organization.
+
+Answer "YES" if the request involves any of that, even loosely or partially
+(e.g. "add our company logo and address to the top of this letter", "make this
+look like an official bank document", "put a school stamp on this").
+
+Answer "NO" only if it is clearly a personal photo edit with no institutional
+document element — e.g. brightness/color/contrast adjustment, cropping,
+background removal or change, retouching a face or object, resizing, adding a
+filter, removing blemishes, restoring an old photo, whitening teeth, etc.
+
+If genuinely unsure, answer "YES" (fail toward caution).
+Reply with exactly one word: YES or NO. Nothing else."""
+
+def classify_letterhead_request(prompt: str) -> bool:
+    """Returns True if the edit request looks like it's asking for an
+    institutional letterhead / official document rather than a personal
+    photo touch-up. Fails safe (True = restricted) if the classifier errors."""
+    result = call_openai("gpt-4o-mini", _LETTERHEAD_CLASSIFIER_SYSTEM, prompt)
+    if not result:
+        return True
+    return result.strip().upper().startswith("Y")
+
+
 IMAGE_BUCKET = "evosgpt-images"
 
 def ensure_image_bucket():
@@ -303,6 +396,145 @@ def upload_generated_image(user_id: int, b64_png: str) -> Optional[str]:
     except Exception as e:
         print("IMAGE UPLOAD ERROR:", e)
         return None
+
+
+# =========================
+# PDF / WORD DOCUMENT GENERATION
+# =========================
+DOCUMENT_BUCKET = "evosgpt-documents"
+
+def ensure_document_bucket():
+    try:
+        buckets = db_client.storage.list_buckets()
+        if not any(b.name == DOCUMENT_BUCKET for b in buckets):
+            db_client.storage.create_bucket(DOCUMENT_BUCKET, options={"public": True})
+    except Exception as e:
+        print("DOCUMENT BUCKET SETUP WARNING:", e)
+
+def upload_document(user_id: int, raw_bytes: bytes, ext: str, content_type: str) -> Optional[str]:
+    try:
+        path = f"{user_id}/{uuid.uuid4().hex}.{ext}"
+        db_client.storage.from_(DOCUMENT_BUCKET).upload(
+            path, raw_bytes, file_options={"content-type": content_type}
+        )
+        return db_client.storage.from_(DOCUMENT_BUCKET).get_public_url(path)
+    except Exception as e:
+        print("DOCUMENT UPLOAD ERROR:", e)
+        return None
+
+
+_DOCUMENT_CONTENT_SYSTEM = """You write clean, well-structured content for EVOSGPT's PDF/Word export tool.
+Output ONLY the document content — no commentary, no markdown code fences, no asterisks for bold/italic.
+
+Use this exact minimal markup so it lays out correctly on the page:
+- A line starting with "# " = the document title (use exactly once, at the very top)
+- A line starting with "## " = a section heading
+- A line starting with "- " = a bullet list item
+- A blank line = paragraph break
+- Any other line = normal paragraph text (it will be justified on the page)
+
+Keep it well-organized, concise, and professional. Do not include page numbers, headers,
+footers, or a "Copy the above" style note — those don't apply here."""
+
+def generate_document_content(prompt: str, title: Optional[str], username: str) -> Optional[str]:
+    user_msg = prompt if not title else f"Title: {title}\n\n{prompt}"
+    return call_openai("gpt-4o", _DOCUMENT_CONTENT_SYSTEM, f"Write this for {username}:\n\n{user_msg}")
+
+def parse_doc_markup(text: str) -> list:
+    """Turns the minimal markup above into [(kind, text), ...] blocks,
+    kind in {'h1','h2','li','p'}."""
+    blocks = []
+    for raw_line in (text or "").splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        if line.startswith("# "):
+            blocks.append(("h1", line[2:].strip()))
+        elif line.startswith("## "):
+            blocks.append(("h2", line[3:].strip()))
+        elif line.startswith("- "):
+            blocks.append(("li", line[2:].strip()))
+        else:
+            blocks.append(("p", line))
+    return blocks
+
+def render_pdf_document(blocks: list, paper_size: str = DEFAULT_PAPER_SIZE) -> bytes:
+    """Renders blocks to a PDF using reportlab, with even margins and
+    justified body text so the layout sits centered/aligned on the page."""
+    size_cfg = PAPER_SIZES.get(paper_size.upper(), PAPER_SIZES[DEFAULT_PAPER_SIZE])
+    buf = BytesIO()
+    margin = 2.2 * cm
+    doc = SimpleDocTemplate(
+        buf, pagesize=size_cfg["pdf"],
+        leftMargin=margin, rightMargin=margin, topMargin=margin, bottomMargin=margin,
+    )
+
+    styles = getSampleStyleSheet()
+    h1_style = ParagraphStyle("DocH1", parent=styles["Heading1"], alignment=TA_CENTER, fontSize=19, spaceAfter=16)
+    h2_style = ParagraphStyle("DocH2", parent=styles["Heading2"], alignment=TA_LEFT, fontSize=14, spaceBefore=10, spaceAfter=8)
+    body_style = ParagraphStyle("DocBody", parent=styles["Normal"], alignment=TA_JUSTIFY, fontSize=11, leading=16, spaceAfter=10)
+    li_style = ParagraphStyle("DocLi", parent=body_style, leftIndent=6, spaceAfter=4)
+
+    story = []
+    list_buffer = []
+
+    def flush_list():
+        if list_buffer:
+            story.append(ListFlowable(
+                [ListItem(Paragraph(item, li_style)) for item in list_buffer],
+                bulletType="bullet", start="•", leftIndent=18,
+            ))
+            story.append(Spacer(1, 8))
+            list_buffer.clear()
+
+    for kind, text in blocks:
+        if kind == "li":
+            list_buffer.append(text)
+            continue
+        flush_list()
+        if kind == "h1":
+            story.append(Paragraph(text, h1_style))
+        elif kind == "h2":
+            story.append(Paragraph(text, h2_style))
+        else:
+            story.append(Paragraph(text, body_style))
+    flush_list()
+
+    doc.build(story)
+    return buf.getvalue()
+
+def render_docx_document(blocks: list, paper_size: str = DEFAULT_PAPER_SIZE) -> bytes:
+    """Renders blocks to a .docx using python-docx, with the page size,
+    even margins, and paragraph justification set explicitly so it lines
+    up the same way regardless of the reader's default Word template."""
+    size_cfg = PAPER_SIZES.get(paper_size.upper(), PAPER_SIZES[DEFAULT_PAPER_SIZE])
+    width_cm, height_cm = size_cfg["docx_cm"]
+
+    doc = DocxDocument()
+    section = doc.sections[0]
+    section.page_width  = Cm(width_cm)
+    section.page_height = Cm(height_cm)
+    margin = Cm(2.2)
+    section.left_margin = section.right_margin = margin
+    section.top_margin = section.bottom_margin = margin
+
+    for kind, text in blocks:
+        if kind == "h1":
+            p = doc.add_heading(text, level=1)
+            p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        elif kind == "h2":
+            doc.add_heading(text, level=2)
+        elif kind == "li":
+            doc.add_paragraph(text, style="List Bullet")
+        else:
+            p = doc.add_paragraph(text)
+            p.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
+            for run in p.runs:
+                run.font.size = Pt(11)
+
+    out = BytesIO()
+    doc.save(out)
+    return out.getvalue()
 
 def build_system_prompt(tier: str, long_memory: Optional[str], username: str, geo: Optional[dict] = None) -> str:
     prompt = BASE_PROMPT + TIER_PERSONA.get(tier, TIER_PERSONA["Basic"]) + EVOS_NUDGE
@@ -581,6 +813,180 @@ def image_generate(data: ImageGenRequest, request: Request):
     except Exception as e:
         print("IMAGE ENDPOINT ERROR:", e)
         raise HTTPException(500, "Image generation failed")
+
+
+@app.post("/image/edit")
+def image_edit(data: ImageEditRequest, request: Request):
+    try:
+        user_id = data.user_id
+        prompt  = data.prompt.strip()
+        if not prompt:
+            raise HTTPException(400, "Describe the edit you want")
+        if not data.image_base64:
+            raise HTTPException(400, "No image provided to edit")
+
+        user = get_user_by_id(user_id)
+        if not user:
+            raise HTTPException(404, "User not found")
+
+        tier = user.get("evosgpt_tier", "Basic")
+        if tier not in IMAGE_GEN_TIERS:
+            return {
+                "status": "tier_restricted",
+                "reply": "Image editing is a Pro-tier feature. Upgrade to unlock it!",
+                "tier": tier,
+            }
+
+        # Institutional-letterhead safety gate: only Founder tier may create
+        # or edit letterheaded / official institutional documents, to guard
+        # against impersonation or document fraud. A user editing their own
+        # personal photo (brightness, crop, retouch, background, etc.) is
+        # unaffected by this and stays gated only by IMAGE_GEN_TIERS above.
+        if tier != LETTERHEAD_ALLOWED_TIER and classify_letterhead_request(prompt):
+            return {
+                "status": "letterhead_restricted",
+                "reply": (
+                    "I can't create or edit official letterheads or institutional documents "
+                    "(company, school, bank, government, church, NGO, etc.) outside Founder tier — "
+                    "that's to prevent impersonation and document fraud. If you're actually editing "
+                    "your own personal photo (brightness, cropping, background, retouching, and so on), "
+                    "just rephrase it that way and I'll go ahead."
+                ),
+                "tier": tier,
+            }
+
+        tier_cfg  = TIERS.get(tier, TIERS["Basic"])
+        day_limit = tier_cfg["day_limit"]
+        today_count = get_today_count(user_id)
+        if day_limit is not None and today_count >= day_limit:
+            return {
+                "status": "limit_reached",
+                "reply": f"You've used all {day_limit} free chats for today. Come back tomorrow or upgrade for unlimited chats!",
+                "tier": tier, "limit_reached": True,
+                "today_count": today_count, "day_limit": day_limit,
+            }
+
+        b64_png = edit_image(prompt, data.image_base64, data.image_mime or "image/png")
+        if not b64_png:
+            raise HTTPException(500, "Image edit failed. Try again.")
+
+        image_url = upload_generated_image(user_id, b64_png)
+        if not image_url:
+            raise HTTPException(500, "Image was edited but could not be saved. Try again.")
+
+        reply = f"![Edited image]({image_url})\n\n*Edit: {prompt}*"
+
+        save_message(user_id, "user", f"[Image edit request] {prompt}")
+        save_message(user_id, "assistant", reply)
+        increment_today_count(user_id)
+
+        return {
+            "status": "ok", "reply": reply, "image_url": image_url,
+            "tier": tier, "today_count": today_count + 1, "day_limit": day_limit,
+        }
+    except HTTPException: raise
+    except Exception as e:
+        print("IMAGE EDIT ENDPOINT ERROR:", e)
+        raise HTTPException(500, "Image edit failed")
+
+
+@app.post("/document/generate")
+def document_generate(data: DocumentGenRequest, request: Request):
+    try:
+        user_id = data.user_id
+        prompt  = data.prompt.strip()
+        if not prompt:
+            raise HTTPException(400, "Describe the document you want")
+
+        doc_format = (data.doc_format or "pdf").lower()
+        if doc_format not in ("pdf", "docx"):
+            raise HTTPException(400, "doc_format must be 'pdf' or 'docx'")
+
+        paper_size = (data.paper_size or DEFAULT_PAPER_SIZE).upper()
+        if paper_size not in PAPER_SIZES:
+            paper_size = DEFAULT_PAPER_SIZE
+
+        user = get_user_by_id(user_id)
+        if not user:
+            raise HTTPException(404, "User not found")
+
+        tier = user.get("evosgpt_tier", "Basic")
+        if tier not in DOCUMENT_GEN_TIERS:
+            return {
+                "status": "tier_restricted",
+                "reply": "PDF/Word document generation is a Pro-tier feature. Upgrade to unlock it!",
+                "tier": tier,
+            }
+
+        # Same institutional-letterhead safety gate as image editing — a
+        # letterhead is most often literally a PDF/Word document, so it's
+        # gated here too. A personal document (CV, personal letter, notes,
+        # a report the user is writing themselves) is unaffected.
+        if tier != LETTERHEAD_ALLOWED_TIER and classify_letterhead_request(prompt):
+            return {
+                "status": "letterhead_restricted",
+                "reply": (
+                    "I can't generate an official letterhead or institutional document "
+                    "(company, school, bank, government, church, NGO, etc.) outside Founder "
+                    "tier — that's to prevent impersonation and document fraud. Personal "
+                    "documents (a CV, a personal letter, notes, a report you're writing "
+                    "yourself) are fine — just rephrase it that way and I'll go ahead."
+                ),
+                "tier": tier,
+            }
+
+        tier_cfg  = TIERS.get(tier, TIERS["Basic"])
+        day_limit = tier_cfg["day_limit"]
+        today_count = get_today_count(user_id)
+        if day_limit is not None and today_count >= day_limit:
+            return {
+                "status": "limit_reached",
+                "reply": f"You've used all {day_limit} free chats for today. Come back tomorrow or upgrade for unlimited chats!",
+                "tier": tier, "limit_reached": True,
+                "today_count": today_count, "day_limit": day_limit,
+            }
+
+        username = user.get("username", "there")
+        content = generate_document_content(prompt, data.title, username)
+        if not content:
+            raise HTTPException(500, "Document generation failed. Try again.")
+
+        blocks = parse_doc_markup(content)
+        if not blocks:
+            raise HTTPException(500, "Document generation failed. Try again.")
+
+        title_text = data.title or next((t for k, t in blocks if k == "h1"), "Document")
+
+        try:
+            if doc_format == "pdf":
+                raw = render_pdf_document(blocks, paper_size)
+                ext, content_type = "pdf", "application/pdf"
+            else:
+                raw = render_docx_document(blocks, paper_size)
+                ext, content_type = "docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        except Exception as e:
+            print("DOCUMENT RENDER ERROR:", e)
+            raise HTTPException(500, "Document formatting failed. Try again.")
+
+        doc_url = upload_document(user_id, raw, ext, content_type)
+        if not doc_url:
+            raise HTTPException(500, "Document was generated but could not be saved. Try again.")
+
+        reply = f"📄 **{title_text}** — [Download {doc_format.upper()} ({paper_size})]({doc_url})"
+
+        save_message(user_id, "user", f"[Document generation request: {doc_format.upper()}/{paper_size}] {prompt}")
+        save_message(user_id, "assistant", reply)
+        increment_today_count(user_id)
+
+        return {
+            "status": "ok", "reply": reply, "document_url": doc_url,
+            "doc_format": doc_format, "paper_size": paper_size,
+            "tier": tier, "today_count": today_count + 1, "day_limit": day_limit,
+        }
+    except HTTPException: raise
+    except Exception as e:
+        print("DOCUMENT ENDPOINT ERROR:", e)
+        raise HTTPException(500, "Document generation failed")
 
 
 @app.get("/memory/{user_id}")

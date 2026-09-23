@@ -8,6 +8,8 @@ export const registerUser = (d)  => API.post("/auth/register", d);
 export const loginUser    = (d)  => API.post("/auth/login", d);
 export const sendMessage  = (d)  => API.post("/chat", d);
 export const generateImage = (d) => API.post("/image/generate", d);
+export const editImage     = (d) => API.post("/image/edit", d);
+export const generateDocument = (d) => API.post("/document/generate", d);
 export const getMemory    = (id) => API.get(`/memory/${id}`);
 export const clearMemory  = (id) => API.delete(`/memory/${id}`);
 export const getUser      = (id) => API.get(`/user/${id}`);
